@@ -22,6 +22,9 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
     f"sqlite:///{os.path.join(basedir, 'instance', 'classconnect.db')}"
 )
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+if app.config['SQLALCHEMY_DATABASE_URI'].startswith('sqlite'):
+    from sqlalchemy.pool import NullPool
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}
 
 # ── File uploads ──────────────────────────────────────────────────────────────
 app.config['UPLOAD_FOLDER'] = os.path.join(basedir, 'uploads')
