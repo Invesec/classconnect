@@ -1,0 +1,11 @@
+Flask==3.0.3
+Flask-SQLAlchemy==3.1.1
+Flask-Login==0.6.3
+Flask-Mail==0.10.0
+Flask-SocketIO==5.3.6
+Werkzeug==3.0.4
+python-dotenv==1.0.1
+# Uncomment for MySQL instead of default SQLite:
+# PyMySQL==1.1.1
+gunicorn==23.0.0
+eventlet==0.35.2

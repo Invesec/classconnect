@@ -1,0 +1,92 @@
+{% extends 'base.html' %}
+{% block title %}Admin – ClassConnect{% endblock %}
+{% block content %}
+<div class="page-header animate-fade">
+  <div>
+    <div class="page-title">Administration 🛡️</div>
+    <div class="page-subtitle">Platform overview and user management</div>
+  </div>
+</div>
+
+<div class="grid grid-4" style="margin-bottom:1.5rem;">
+  <div class="stat-card animate-up">
+    <div class="stat-icon stat-icon-blue">👤</div>
+    <div><div class="stat-num">{{ users|length }}</div><div class="stat-label">Users</div></div>
+  </div>
+  <div class="stat-card animate-up">
+    <div class="stat-icon stat-icon-green">📘</div>
+    <div><div class="stat-num">{{ courses|length }}</div><div class="stat-label">Courses</div></div>
+  </div>
+  <div class="stat-card animate-up">
+    <div class="stat-icon stat-icon-amber">📡</div>
+    <div><div class="stat-num">{{ total_sessions }}</div><div class="stat-label">Sessions</div></div>
+  </div>
+  <div class="stat-card animate-up">
+    <div class="stat-icon stat-icon-purple">✅</div>
+    <div><div class="stat-num">{{ total_attendance }}</div><div class="stat-label">Attendance</div></div>
+  </div>
+</div>
+
+<div class="card animate-up">
+  <div class="card-header">
+    <div class="card-title">👥 User Accounts</div>
+    <div class="text-muted">{{ users|length }} total</div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th><th>ID Number</th><th>Email</th>
+          <th>Role</th><th>Verified</th><th>Joined</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td style="font-weight:600;">{{ u.full_name }}</td>
+          <td><code style="font-size:.8rem;background:var(--slate-100);padding:.1rem .4rem;border-radius:4px;">{{ u.id_number or '—' }}</code></td>
+          <td class="text-muted">{{ u.email }}</td>
+          <td><span class="badge {% if u.role=='lecturer' %}badge-active{% elif u.role=='admin' %}badge-absent{% else %}badge-closed{% endif %}">{{ u.role }}</span></td>
+          <td>{% if u.email_verified %}✅{% else %}<span style="color:var(--amber-500);">⏳</span>{% endif %}</td>
+          <td class="text-muted" style="font-size:.8rem;">{{ u.created_at.strftime('%d %b %Y') }}</td>
+          <td>
+            {% if u.id != current_user.id %}
+            <form class="inline-form" method="POST" action="{{ url_for('delete_user', user_id=u.id) }}"
+                  onsubmit="return confirm('Remove {{ u.full_name }}?');">
+              <button class="btn btn-sm btn-danger">Remove</button>
+            </form>
+            {% else %}
+            <span class="text-muted" style="font-size:.75rem;">You</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card animate-up">
+  <div class="card-header">
+    <div class="card-title">📘 All Courses</div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Code</th><th>Title</th><th>Lecturer</th><th>Enrolled</th><th>Sessions</th></tr></thead>
+      <tbody>
+        {% for c in courses %}
+        <tr>
+          <td style="font-weight:700;color:var(--blue-600);">{{ c.course_code }}</td>
+          <td>{{ c.title }}</td>
+          <td>{{ c.lecturer.full_name }}</td>
+          <td>{{ c.enrolments|length }}</td>
+          <td>{{ c.sessions|length }}</td>
+        </tr>
+        {% else %}
+        <tr><td class="table-empty" colspan="5">No courses yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

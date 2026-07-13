@@ -1,0 +1,135 @@
+{% extends 'base.html' %}
+{% block title %}{{ session.topic }} – ClassConnect{% endblock %}
+{% block content %}
+
+<script>
+const CC_SESSION_ID = {{ session.id }};
+const CC_USER_ID    = {{ current_user.id }};
+const CC_USER_NAME  = {{ current_user.full_name | tojson }};
+</script>
+
+<div class="session-header animate-fade">
+  <div>
+    <div style="font-size:.78rem;font-weight:600;color:var(--slate-500);text-transform:uppercase;letter-spacing:.06em;margin-bottom:.2rem;">
+      {{ course.course_code }} · {{ course.title }}
+    </div>
+    <div class="page-title" style="font-size:1.4rem;">{{ session.topic }}</div>
+    <div style="margin-top:.4rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;">
+      <span class="badge badge-{{ session.status }}">{{ session.status | capitalize }}</span>
+      <span class="text-muted" style="font-size:.8rem;">Started {{ session.started_at.strftime('%H:%M, %d %b') }}</span>
+      {% if session.status == 'active' %}
+      <span class="live-badge"><span class="live-dot"></span>Live</span>
+      {% endif %}
+    </div>
+  </div>
+  {% if current_user.role == 'lecturer' and session.status == 'active' %}
+  <div class="session-actions">
+    <form method="POST" action="{{ url_for('take_attendance', session_id=session.id) }}" class="inline-form">
+      <button class="btn btn-success">✅ Take Attendance</button>
+    </form>
+    <form method="POST" action="{{ url_for('close_session', session_id=session.id) }}" class="inline-form"
+          onsubmit="return confirm('Close this session? Students will no longer be able to join.');">
+      <button class="btn btn-danger">⏹ End Session</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+
+{% if session.status == 'active' %}
+<!-- Video panel -->
+<div class="video-panel animate-up">
+  <div class="video-toolbar">
+    <button class="btn-video btn-video-primary" id="btn-camera" data-active="0">📷 Camera</button>
+    <button class="btn-video btn-video-secondary" id="btn-screen" data-active="0">🖥 Screen</button>
+    <button class="btn-video btn-video-secondary" id="btn-mute">🎙 Mute</button>
+    <span id="video-status" class="video-status">Connecting to video server…</span>
+  </div>
+  <div id="video-grid" class="video-grid">
+    <div class="video-empty" id="video-empty">
+      Enable your camera or wait for others to join the video call.
+    </div>
+  </div>
+  {% if current_user.role == 'student' %}
+  <div class="text-muted" style="margin-top:.75rem;font-size:.8rem;color:#94a3b8;">
+    📍 Stay on this page — your lecturer marks you present from here.
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- Participants table -->
+<div class="card animate-up">
+  <div class="card-header">
+    <div class="card-title">
+      👥 Connected Students
+      <span id="participant-count" style="background:var(--blue-100);color:var(--blue-700);padding:.15rem .55rem;border-radius:99px;font-size:.8rem;margin-left:.4rem;">{{ participants|length }}</span>
+    </div>
+    {% if session.status == 'active' %}
+    <span class="live-badge"><span class="live-dot"></span>Auto-refreshing</span>
+    {% endif %}
+  </div>
+  <div class="table-wrap">
+    <table id="participant-table">
+      <thead><tr><th>Student</th><th>Matric No.</th><th>Joined</th><th>Attendance</th></tr></thead>
+      <tbody>
+        {% for p in participants %}
+        <tr>
+          <td style="font-weight:600;">{{ p.student.full_name }}</td>
+          <td class="text-muted" style="font-size:.8rem;">{{ p.student.id_number or '—' }}</td>
+          <td class="text-muted" style="font-size:.8rem;">{{ p.joined_at.strftime('%H:%M:%S') }}</td>
+          <td>
+            {% if p.student_id in attendance_ids %}
+            <span class="badge badge-present">Present</span>
+            {% else %}
+            <span class="badge badge-absent">Not yet</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td class="table-empty" colspan="4">No students have joined yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="flex gap-2 wrap">
+  <a href="{{ url_for('session_report', session_id=session.id) }}" class="btn btn-secondary">📊 Attendance Report</a>
+  <a href="{{ url_for('view_course', course_id=course.id) }}" class="btn btn-ghost">← Back to Course</a>
+</div>
+
+{% if session.status == 'active' %}
+<script>
+async function refreshParticipants() {
+  try {
+    const res  = await fetch("{{ url_for('session_participants_json', session_id=session.id) }}");
+    const data = await res.json();
+    const tbody = document.querySelector('#participant-table tbody');
+    document.getElementById('participant-count').textContent = data.participants.length;
+    if (!data.participants.length) {
+      tbody.innerHTML = '<tr><td class="table-empty" colspan="4">No students have joined yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.participants.map(p => `
+      <tr>
+        <td style="font-weight:600;">${p.name}</td>
+        <td class="text-muted" style="font-size:.8rem;">${p.id_number}</td>
+        <td class="text-muted" style="font-size:.8rem;">${p.joined_at}</td>
+        <td>${p.present
+          ? '<span class="badge badge-present">Present</span>'
+          : '<span class="badge badge-absent">Not yet</span>'}</td>
+      </tr>`).join('');
+    // Remove empty video placeholder
+    const grid = document.getElementById('video-grid');
+    if (grid && data.participants.length > 0) {
+      const empty = document.getElementById('video-empty');
+      if (empty) empty.style.display = 'none';
+    }
+  } catch(e) {}
+}
+setInterval(refreshParticipants, 5000);
+</script>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="{{ url_for('static', filename='js/webrtc.js') }}"></script>
+{% endif %}
+{% endblock %}

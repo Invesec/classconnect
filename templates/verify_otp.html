@@ -1,0 +1,70 @@
+{% extends 'base.html' %}
+{% block title %}Verify Email – ClassConnect{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <div class="auth-card animate-up" style="max-width:420px;text-align:center;">
+    <div style="font-size:3rem;margin-bottom:.75rem;">📬</div>
+    <div class="auth-title">Check your email</div>
+    <div class="auth-sub" style="margin-top:.4rem;">
+      We sent a 6-digit code to<br><strong style="color:var(--slate-800);">{{ user.email }}</strong>
+    </div>
+    <p class="text-muted" style="margin:.75rem 0 1.5rem;font-size:.82rem;">Expires in 10 minutes.</p>
+
+    <form method="POST" id="otp-form">
+      <div class="otp-inputs" id="otp-inputs">
+        <input class="otp-digit" type="text" maxlength="1" inputmode="numeric" pattern="\d" autofocus>
+        <input class="otp-digit" type="text" maxlength="1" inputmode="numeric" pattern="\d">
+        <input class="otp-digit" type="text" maxlength="1" inputmode="numeric" pattern="\d">
+        <input class="otp-digit" type="text" maxlength="1" inputmode="numeric" pattern="\d">
+        <input class="otp-digit" type="text" maxlength="1" inputmode="numeric" pattern="\d">
+        <input class="otp-digit" type="text" maxlength="1" inputmode="numeric" pattern="\d">
+      </div>
+      <input type="hidden" name="otp" id="otp-hidden">
+      <button type="submit" class="btn btn-primary btn-full btn-lg mt-2" id="verify-btn" disabled>
+        Verify Code
+      </button>
+    </form>
+
+    <div class="auth-divider">or</div>
+
+    <form method="POST" action="{{ url_for('resend_otp', user_id=user.id) }}">
+      <button type="submit" class="btn btn-secondary btn-full">🔄 Resend Code</button>
+    </form>
+
+    {% if not config.MAIL_USERNAME %}
+    <div style="margin-top:1rem;background:var(--amber-100);border:1px solid #fcd34d;border-radius:8px;padding:.75rem;font-size:.8rem;color:#92400e;text-align:left;">
+      ⚠️ Email not configured — check your <strong>terminal/console</strong> for the OTP code.
+    </div>
+    {% endif %}
+  </div>
+</div>
+<script>
+const digits = document.querySelectorAll('.otp-digit');
+const hidden = document.getElementById('otp-hidden');
+const btn    = document.getElementById('verify-btn');
+
+digits.forEach((d, i) => {
+  d.addEventListener('input', () => {
+    d.value = d.value.replace(/\D/,'');
+    if (d.value && i < 5) digits[i+1].focus();
+    d.classList.toggle('filled', !!d.value);
+    const code = [...digits].map(x => x.value).join('');
+    hidden.value = code;
+    btn.disabled = code.length < 6;
+    if (code.length === 6) btn.classList.add('btn-success');
+    else btn.classList.remove('btn-success');
+  });
+  d.addEventListener('keydown', e => {
+    if (e.key === 'Backspace' && !d.value && i > 0) digits[i-1].focus();
+  });
+  d.addEventListener('paste', e => {
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g,'');
+    digits.forEach((el, j) => { el.value = text[j] || ''; el.classList.toggle('filled', !!el.value); });
+    hidden.value = text.slice(0,6);
+    btn.disabled = hidden.value.length < 6;
+    digits[Math.min(text.length, 5)].focus();
+  });
+});
+</script>
+{% endblock %}

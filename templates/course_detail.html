@@ -1,0 +1,161 @@
+{% extends 'base.html' %}
+{% block title %}{{ course.course_code }} – ClassConnect{% endblock %}
+{% block content %}
+
+<div class="page-header animate-fade">
+  <div>
+    <div style="font-size:.8rem;font-weight:700;color:var(--blue-600);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.2rem;">{{ course.course_code }}</div>
+    <div class="page-title">{{ course.title }}</div>
+    {% if course.description %}<div class="page-subtitle">{{ course.description }}</div>{% endif %}
+  </div>
+  <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">← Dashboard</a>
+</div>
+
+{% if current_user.role == 'lecturer' %}
+<!-- Enrolment code -->
+<div class="card animate-up" style="border:1.5px dashed var(--blue-300);background:var(--blue-50);">
+  <div class="card-title" style="margin-bottom:.75rem;">🔑 Course Enrolment Code</div>
+  <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+    <div class="code-display">
+      <span class="code-value" id="enrol-code">{{ course.enrolment_code }}</span>
+    </div>
+    <button class="code-copy btn btn-secondary btn-sm" onclick="copyCode()">📋 Copy</button>
+    <span id="copy-toast" style="display:none;color:var(--green-600);font-size:.82rem;font-weight:600;">Copied!</span>
+  </div>
+  <div class="text-muted mt-1">{{ course.enrolments|length }} student(s) enrolled</div>
+</div>
+
+<!-- Start session -->
+<div class="card animate-up">
+  <div class="card-header">
+    <div class="card-title">📡 Start Virtual Class</div>
+  </div>
+  <form method="POST" action="{{ url_for('start_session', course_id=course.id) }}" class="flex gap-2 wrap">
+    <input type="text" name="topic" class="form-input" placeholder="Session topic (optional)"
+           style="max-width:320px;flex:1;">
+    <button type="submit" class="btn btn-success">▶ Start Session</button>
+  </form>
+</div>
+
+<!-- Upload material -->
+<div class="card animate-up">
+  <div class="card-header">
+    <div class="card-title">📤 Upload Material</div>
+  </div>
+  <form method="POST" action="{{ url_for('upload_material', course_id=course.id) }}" enctype="multipart/form-data">
+    <div class="form-group">
+      <label class="form-label">Title</label>
+      <input type="text" name="title" class="form-input" placeholder="e.g. Week 3 Lecture Slides" required>
+    </div>
+    <div class="file-drop" id="file-drop" onclick="document.getElementById('real-file-input').click()">
+      <div class="file-drop-icon">📄</div>
+      <p><strong>Click to browse</strong> or drag & drop</p>
+      <p style="font-size:.78rem;margin-top:.25rem;">PDF, Word, PowerPoint — max 25 MB</p>
+      <div class="file-selected" id="file-name"></div>
+    </div>
+    <input type="file" id="real-file-input" name="file"
+           accept=".pdf,.doc,.docx,.ppt,.pptx" onchange="showFileName(this)">
+    <button type="submit" class="btn btn-primary mt-2">Upload</button>
+  </form>
+</div>
+{% endif %}
+
+{% if current_user.role == 'student' %}
+<div class="stat-card animate-up" style="margin-bottom:1.25rem;">
+  <div class="stat-icon stat-icon-green">✅</div>
+  <div>
+    <div class="stat-num">{{ my_attendance }}</div>
+    <div class="stat-label">Sessions Attended</div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Sessions -->
+<div class="card animate-up">
+  <div class="card-header">
+    <div class="card-title">📡 Class Sessions</div>
+    <span class="text-muted">{{ sessions|length }} total</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Topic</th><th>Status</th><th>Started</th><th>Actions</th></tr></thead>
+      <tbody>
+        {% for s in sessions %}
+        <tr>
+          <td style="font-weight:600;">{{ s.topic }}</td>
+          <td><span class="badge badge-{{ s.status }}">{{ s.status | capitalize }}</span></td>
+          <td class="text-muted" style="font-size:.8rem;">{{ s.started_at.strftime('%d %b %Y, %H:%M') }}</td>
+          <td>
+            <div class="flex gap-1">
+              <a href="{{ url_for('session_room', session_id=s.id) }}"
+                 class="btn btn-sm {% if s.status=='active' %}btn-success{% else %}btn-secondary{% endif %}">
+                {% if s.status=='active' %}▶ Join{% else %}View{% endif %}
+              </a>
+              <a href="{{ url_for('session_report', session_id=s.id) }}" class="btn btn-sm btn-ghost">Report</a>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td class="table-empty" colspan="4">No sessions yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Materials -->
+<div class="card animate-up">
+  <div class="card-header">
+    <div class="card-title">📁 Course Materials</div>
+    <span class="text-muted">{{ materials|length }} file(s)</span>
+  </div>
+  {% if materials %}
+  <div style="display:flex;flex-direction:column;gap:.65rem;">
+    {% for m in materials %}
+    <div style="display:flex;align-items:center;gap:1rem;padding:.75rem;border:1px solid var(--slate-200);border-radius:8px;background:var(--slate-50);">
+      <div style="font-size:1.5rem;">
+        {% if m.filename.endswith('.pdf') %}📕
+        {% elif m.filename.endswith(('.doc','.docx')) %}📘
+        {% else %}📊{% endif %}
+      </div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{{ m.title }}</div>
+        <div class="text-muted" style="font-size:.75rem;">{{ m.filename }} · {{ m.upload_date.strftime('%d %b %Y') }}</div>
+      </div>
+      <a href="{{ url_for('download_material', material_id=m.id) }}" class="btn btn-sm btn-primary">⬇ Download</a>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="text-muted text-center" style="padding:1.5rem;">No materials uploaded yet.</div>
+  {% endif %}
+</div>
+
+<script>
+function copyCode() {
+  navigator.clipboard.writeText('{{ course.enrolment_code }}').then(() => {
+    const t = document.getElementById('copy-toast');
+    t.style.display = 'inline';
+    setTimeout(() => t.style.display = 'none', 2000);
+  });
+}
+function showFileName(input) {
+  const name = input.files[0]?.name || '';
+  document.getElementById('file-name').textContent = name ? '✅ ' + name : '';
+}
+const drop = document.getElementById('file-drop');
+if (drop) {
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag-over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('drag-over'));
+  drop.addEventListener('drop', e => {
+    e.preventDefault(); drop.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file) {
+      const input = document.getElementById('real-file-input');
+      const dt = new DataTransfer(); dt.items.add(file); input.files = dt.files;
+      document.getElementById('file-name').textContent = '✅ ' + file.name;
+    }
+  });
+}
+</script>
+{% endblock %}

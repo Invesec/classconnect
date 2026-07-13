@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% block title %}Error {{ code }} – ClassConnect{% endblock %}
+{% block content %}
+<div class="error-page animate-up">
+  <div class="error-code">{{ code }}</div>
+  <div class="error-msg">{{ message }}</div>
+  <a href="{{ url_for('index') }}" class="btn btn-primary">Go Home</a>
+</div>
+{% endblock %}

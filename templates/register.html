@@ -1,0 +1,111 @@
+{% extends 'base.html' %}
+{% block title %}Register – ClassConnect{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <div class="auth-card animate-up" style="max-width:500px;">
+    <div class="auth-logo">
+      <div class="auth-logo-icon">🎓</div>
+      <div class="auth-title">Create your account</div>
+      <div class="auth-sub">Join ClassConnect at Federal University Otuoke</div>
+    </div>
+
+    <form method="POST" id="reg-form">
+      <div class="form-group">
+        <label class="form-label">I am a</label>
+        <div class="role-selector">
+          <label class="role-option">
+            <input type="radio" name="role" value="student" checked onchange="updateIdLabel()">
+            <div class="role-label">
+              <span class="role-emoji">👨‍🎓</span>
+              <span class="role-text">Student</span>
+            </div>
+          </label>
+          <label class="role-option">
+            <input type="radio" name="role" value="lecturer" onchange="updateIdLabel()">
+            <div class="role-label">
+              <span class="role-emoji">👨‍🏫</span>
+              <span class="role-text">Lecturer</span>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Full Name</label>
+        <input type="text" name="full_name" class="form-input" placeholder="e.g. Gabriel Vincent Andrew" required>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label" id="id-label">Matric Number</label>
+          <input type="text" name="id_number" class="form-input" id="id-field"
+                 placeholder="e.g. FUO/21/CSI/123" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Email Address</label>
+          <input type="email" name="email" class="form-input" placeholder="you@email.com" required>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <div style="position:relative;">
+          <input type="password" name="password" id="pw-field" class="form-input"
+                 placeholder="Min. 6 characters" required minlength="6">
+          <button type="button" onclick="togglePw()" style="position:absolute;right:.75rem;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--slate-400);" id="pw-toggle">👁</button>
+        </div>
+      </div>
+
+      <div class="mt-1" id="pw-strength" style="display:none;">
+        <div style="height:4px;border-radius:99px;background:var(--slate-200);overflow:hidden;">
+          <div id="pw-bar" style="height:100%;border-radius:99px;width:0%;transition:width .3s,background .3s;"></div>
+        </div>
+        <span id="pw-label" style="font-size:.72rem;color:var(--slate-500);"></span>
+      </div>
+
+      <button type="submit" class="btn btn-primary btn-full btn-lg mt-2" id="reg-btn">
+        <span id="reg-text">Create Account</span>
+        <span id="reg-spinner" style="display:none;">⏳</span>
+      </button>
+    </form>
+
+    <div class="auth-footer">
+      Already have an account? <a href="{{ url_for('login') }}">Sign in</a>
+    </div>
+  </div>
+</div>
+<script>
+function updateIdLabel() {
+  const isLecturer = document.querySelector('input[name="role"]:checked').value === 'lecturer';
+  document.getElementById('id-label').textContent = isLecturer ? 'Staff/Lecturer ID' : 'Matric Number';
+  document.getElementById('id-field').placeholder = isLecturer ? 'e.g. FUO/STAFF/001' : 'e.g. FUO/21/CSI/123';
+}
+function togglePw() {
+  const f = document.getElementById('pw-field');
+  const b = document.getElementById('pw-toggle');
+  f.type = f.type === 'password' ? 'text' : 'password';
+  b.textContent = f.type === 'password' ? '👁' : '🙈';
+}
+document.getElementById('pw-field').addEventListener('input', function() {
+  const v = this.value; const bar = document.getElementById('pw-bar');
+  const lbl = document.getElementById('pw-label');
+  document.getElementById('pw-strength').style.display = v ? 'block' : 'none';
+  let score = 0;
+  if (v.length >= 6) score++;
+  if (v.length >= 10) score++;
+  if (/[A-Z]/.test(v)) score++;
+  if (/[0-9]/.test(v)) score++;
+  if (/[^A-Za-z0-9]/.test(v)) score++;
+  const colors = ['#ef4444','#f97316','#eab308','#22c55e','#16a34a'];
+  const labels = ['Very weak','Weak','Fair','Strong','Very strong'];
+  bar.style.width = (score * 20) + '%';
+  bar.style.background = colors[score - 1] || '#ef4444';
+  lbl.textContent = labels[score - 1] || '';
+});
+document.getElementById('reg-form').addEventListener('submit', () => {
+  document.getElementById('reg-text').style.display = 'none';
+  document.getElementById('reg-spinner').style.display = 'inline';
+  document.getElementById('reg-btn').disabled = true;
+});
+</script>
+{% endblock %}

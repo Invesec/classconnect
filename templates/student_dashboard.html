@@ -1,0 +1,78 @@
+{% extends 'base.html' %}
+{% block title %}Dashboard – ClassConnect{% endblock %}
+{% block content %}
+<div class="page-header animate-fade">
+  <div>
+    <div class="page-title">Hello, {{ current_user.full_name.split()[0] }} 👋</div>
+    <div class="page-subtitle">{{ current_user.id_number }} &nbsp;·&nbsp; Student</div>
+  </div>
+</div>
+
+<!-- Enrol card -->
+<div class="card animate-up" style="border:1.5px dashed var(--blue-300);background:var(--blue-50);">
+  <div class="card-header">
+    <div class="card-title">🔑 Enrol in a Course</div>
+  </div>
+  <form method="POST" action="{{ url_for('enrol_course') }}" class="enrol-form">
+    <input type="text" name="enrolment_code" class="form-input"
+           placeholder="Enter code e.g. AB12CD" maxlength="8" required
+           style="text-transform:uppercase;">
+    <button type="submit" class="btn btn-primary">Join Course</button>
+  </form>
+</div>
+
+<!-- Stats -->
+{% if courses %}
+<div class="grid grid-3" style="margin-bottom:1.5rem;">
+  <div class="stat-card animate-up">
+    <div class="stat-icon stat-icon-blue">📚</div>
+    <div><div class="stat-num">{{ courses|length }}</div><div class="stat-label">Enrolled</div></div>
+  </div>
+  <div class="stat-card animate-up">
+    <div class="stat-icon stat-icon-green">📡</div>
+    <div>
+      {% set live = [] %}
+      {% for c in courses %}{% for s in c.sessions %}{% if s.status=='active' %}{% set _ = live.append(1) %}{% endif %}{% endfor %}{% endfor %}
+      <div class="stat-num">{{ live|length }}</div>
+      <div class="stat-label">Live Now</div>
+    </div>
+  </div>
+  <div class="stat-card animate-up">
+    <div class="stat-icon stat-icon-amber">📁</div>
+    <div>
+      {% set total_materials = [] %}
+      {% for c in courses %}{% for m in c.materials %}{% set _ = total_materials.append(1) %}{% endfor %}{% endfor %}
+      <div class="stat-num">{{ total_materials|length }}</div>
+      <div class="stat-label">Materials</div>
+    </div>
+  </div>
+</div>
+
+<div class="card-title" style="margin-bottom:.75rem;color:var(--slate-600);font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;">My Courses</div>
+<div class="grid grid-2 animate-up">
+  {% for course in courses %}
+  {% set active_session = course.sessions|selectattr('status','eq','active')|first %}
+  <a href="{{ url_for('view_course', course_id=course.id) }}" class="course-card">
+    <div class="course-card-top" style="background:linear-gradient(90deg,hsl({{ loop.index * 67 % 360 }},65%,48%),hsl({{ (loop.index*67+50)%360 }},65%,58%));"></div>
+    <div class="course-card-body">
+      <div class="course-code">{{ course.course_code }}</div>
+      <div class="course-title">{{ course.title }}</div>
+      <div class="course-meta">👨‍🏫 {{ course.lecturer.full_name }}</div>
+    </div>
+    <div class="course-card-footer">
+      <span class="text-muted" style="font-size:.78rem;">📁 {{ course.materials|length }} file(s)</span>
+      {% if active_session %}
+      <span class="live-badge"><span class="live-dot"></span>JOIN NOW</span>
+      {% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card animate-up" style="text-align:center;padding:3rem;">
+  <div style="font-size:3rem;margin-bottom:1rem;">🎒</div>
+  <div style="font-weight:700;color:var(--slate-700);margin-bottom:.5rem;">No courses yet</div>
+  <div class="text-muted">Ask your lecturer for an enrolment code and enter it above.</div>
+</div>
+{% endif %}
+{% endblock %}

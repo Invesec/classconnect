@@ -1,0 +1,79 @@
+{% extends 'base.html' %}
+{% block title %}Dashboard – ClassConnect{% endblock %}
+{% block content %}
+<div class="page-header animate-fade">
+  <div>
+    <div class="page-title">Good day, {{ current_user.full_name.split()[0] }} 👋</div>
+    <div class="page-subtitle">Here's an overview of your courses</div>
+  </div>
+  <a href="{{ url_for('create_course') }}" class="btn btn-primary">➕ New Course</a>
+</div>
+
+<!-- Stats -->
+<div class="grid grid-4" style="margin-bottom:1.5rem;">
+  <div class="stat-card animate-up">
+    <div class="stat-icon stat-icon-blue">📘</div>
+    <div>
+      <div class="stat-num">{{ courses|length }}</div>
+      <div class="stat-label">Courses</div>
+    </div>
+  </div>
+  <div class="stat-card animate-up">
+    <div class="stat-icon stat-icon-green">👥</div>
+    <div>
+      <div class="stat-num">{{ courses|sum(attribute='enrolments')|list|length }}</div>
+      <div class="stat-label">Students</div>
+    </div>
+  </div>
+  <div class="stat-card animate-up">
+    <div class="stat-icon stat-icon-amber">📡</div>
+    <div>
+      {% set active = courses|selectattr('sessions')|map(attribute='sessions')|sum(start=[])|selectattr('status','eq','active')|list %}
+      <div class="stat-num">{{ active|length }}</div>
+      <div class="stat-label">Live Sessions</div>
+    </div>
+  </div>
+  <div class="stat-card animate-up">
+    <div class="stat-icon stat-icon-purple">📁</div>
+    <div>
+      <div class="stat-num">{{ courses|sum(attribute='materials')|list|length }}</div>
+      <div class="stat-label">Materials</div>
+    </div>
+  </div>
+</div>
+
+<!-- Courses -->
+{% if courses %}
+<div class="card-title" style="margin-bottom:.75rem;color:var(--slate-600);font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;">My Courses</div>
+<div class="grid grid-2 animate-up">
+  {% for course in courses %}
+  {% set active_session = course.sessions|selectattr('status','eq','active')|first %}
+  <a href="{{ url_for('view_course', course_id=course.id) }}" class="course-card">
+    <div class="course-card-top" style="background:linear-gradient(90deg,hsl({{ loop.index * 47 % 360 }},70%,50%),hsl({{ (loop.index * 47 + 40) % 360 }},70%,60%));"></div>
+    <div class="course-card-body">
+      <div class="course-code">{{ course.course_code }}</div>
+      <div class="course-title">{{ course.title }}</div>
+      {% if course.description %}
+      <div class="course-meta">{{ course.description[:80] }}{% if course.description|length > 80 %}…{% endif %}</div>
+      {% endif %}
+    </div>
+    <div class="course-card-footer">
+      <span class="text-muted">👥 {{ course.enrolments|length }} enrolled</span>
+      {% if active_session %}
+      <span class="live-badge"><span class="live-dot"></span>LIVE</span>
+      {% else %}
+      <span class="text-muted" style="font-size:.78rem;">{{ course.sessions|length }} session(s)</span>
+      {% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card animate-up" style="text-align:center;padding:3rem;">
+  <div style="font-size:3rem;margin-bottom:1rem;">📘</div>
+  <div style="font-weight:700;color:var(--slate-700);margin-bottom:.5rem;">No courses yet</div>
+  <div class="text-muted" style="margin-bottom:1.5rem;">Create your first course to get started.</div>
+  <a href="{{ url_for('create_course') }}" class="btn btn-primary">➕ Create Course</a>
+</div>
+{% endif %}
+{% endblock %}

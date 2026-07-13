@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block title %}ClassConnect – Virtual Learning Platform{% endblock %}
+{% block content %}
+<div class="hero">
+  <div class="hero-badge">🎓 Federal University Otuoke</div>
+  <h1>Learn Without<br>Boundaries</h1>
+  <p class="hero-sub">ClassConnect brings virtual classes, smart attendance, and course materials together — built for Nigerian university students and lecturers.</p>
+  <div class="hero-cta">
+    <a href="{{ url_for('register') }}" class="btn btn-primary btn-lg">Get Started Free</a>
+    <a href="{{ url_for('login') }}" class="btn btn-secondary btn-lg">Login to Dashboard</a>
+  </div>
+</div>
+
+<section class="feature-section">
+  <div class="feature-grid animate-up">
+    <div class="feature-card">
+      <div class="feature-icon">📡</div>
+      <h3>Live Virtual Classes</h3>
+      <p>Lecturers start class in one click. Students join from any browser — camera, mic, and screen share included.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">✅</div>
+      <h3>Tamper-Proof Attendance</h3>
+      <p>Attendance is tied to authenticated session presence — no proxy sign-ins, no paper sheets.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">📚</div>
+      <h3>Course Materials</h3>
+      <p>Upload and access PDFs, Word docs, and PowerPoints from one organised repository.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔐</div>
+      <h3>Email Verification</h3>
+      <p>Every account is verified by a one-time code — ensuring only real university members enrol.</p>
+    </div>
+  </div>
+</section>
+{% endblock %}

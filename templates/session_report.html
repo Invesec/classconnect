@@ -1,0 +1,53 @@
+{% extends 'base.html' %}
+{% block title %}Attendance Report – ClassConnect{% endblock %}
+{% block content %}
+<div class="page-header animate-fade">
+  <div>
+    <div class="page-title">Attendance Report</div>
+    <div class="page-subtitle">{{ course.course_code }} · {{ session.topic }} · {{ session.started_at.strftime('%d %b %Y, %H:%M') }}</div>
+  </div>
+  <a href="{{ url_for('view_course', course_id=course.id) }}" class="btn btn-secondary">← Back</a>
+</div>
+
+<div class="flex gap-2 wrap" style="margin-bottom:1.25rem;">
+  <div class="stat-card" style="flex:1;min-width:140px;">
+    <div class="stat-icon stat-icon-green">✅</div>
+    <div><div class="stat-num">{{ records|length }}</div><div class="stat-label">Present</div></div>
+  </div>
+  <div class="stat-card" style="flex:1;min-width:140px;">
+    <div class="stat-icon stat-icon-blue">👥</div>
+    <div><div class="stat-num">{{ session.participants|length }}</div><div class="stat-label">Joined</div></div>
+  </div>
+  <div class="stat-card" style="flex:1;min-width:140px;">
+    <div class="stat-icon stat-icon-purple">📊</div>
+    <div>
+      <div class="stat-num">
+        {% if session.participants|length > 0 %}
+          {{ ((records|length / session.participants|length) * 100)|round|int }}%
+        {% else %}0%{% endif %}
+      </div>
+      <div class="stat-label">Attendance Rate</div>
+    </div>
+  </div>
+</div>
+
+<div class="card animate-up">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Student</th><th>Matric No.</th><th>Status</th><th>Time Recorded</th></tr></thead>
+      <tbody>
+        {% for r in records %}
+        <tr>
+          <td style="font-weight:600;">{{ r.student.full_name }}</td>
+          <td class="text-muted" style="font-size:.8rem;">{{ r.student.id_number or '—' }}</td>
+          <td><span class="badge badge-present">{{ r.status | capitalize }}</span></td>
+          <td class="text-muted" style="font-size:.8rem;">{{ r.recorded_at.strftime('%H:%M:%S, %d %b %Y') }}</td>
+        </tr>
+        {% else %}
+        <tr><td class="table-empty" colspan="4">No attendance recorded for this session.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

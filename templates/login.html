@@ -1,0 +1,48 @@
+{% extends 'base.html' %}
+{% block title %}Login – ClassConnect{% endblock %}
+{% block content %}
+<div class="auth-wrap">
+  <div class="auth-card animate-up">
+    <div class="auth-logo">
+      <div class="auth-logo-icon">📚</div>
+      <div class="auth-title">Welcome back</div>
+      <div class="auth-sub">Sign in to your ClassConnect account</div>
+    </div>
+
+    <form method="POST" id="login-form">
+      <div class="form-group">
+        <label class="form-label">Email or Matric/Staff ID</label>
+        <input type="text" name="identifier" class="form-input" placeholder="e.g. FUO/21/CSI/123 or you@email.com" required autofocus>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <div style="position:relative;">
+          <input type="password" name="password" id="pw-field" class="form-input" placeholder="••••••••" required>
+          <button type="button" onclick="togglePw()" style="position:absolute;right:.75rem;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--slate-400);font-size:.85rem;" id="pw-toggle">👁</button>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary btn-full btn-lg" id="login-btn">
+        <span id="login-text">Sign In</span>
+        <span id="login-spinner" style="display:none;">⏳</span>
+      </button>
+    </form>
+
+    <div class="auth-footer">
+      Don't have an account? <a href="{{ url_for('register') }}">Register here</a>
+    </div>
+  </div>
+</div>
+<script>
+function togglePw() {
+  const f = document.getElementById('pw-field');
+  const b = document.getElementById('pw-toggle');
+  f.type = f.type === 'password' ? 'text' : 'password';
+  b.textContent = f.type === 'password' ? '👁' : '🙈';
+}
+document.getElementById('login-form').addEventListener('submit', () => {
+  document.getElementById('login-text').style.display = 'none';
+  document.getElementById('login-spinner').style.display = 'inline';
+  document.getElementById('login-btn').disabled = true;
+});
+</script>
+{% endblock %}
