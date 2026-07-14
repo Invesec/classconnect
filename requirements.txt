@@ -6,8 +6,11 @@ Flask-SocketIO==5.3.6
 Werkzeug==3.0.4
 python-dotenv==1.0.1
 requests==2.32.3
+# Required in production: Render's Start Command runs
+# `gunicorn --worker-class eventlet -w 1 app:app`, so both of these must be
+# actual installed dependencies, not commented out — without them the build
+# fails with "gunicorn: command not found" (exit code 127).
+gunicorn==23.0.0
+eventlet==0.35.2
 # Uncomment for MySQL instead of default SQLite:
 # PyMySQL==1.1.1
-# Uncomment for production (VPS):
-# gunicorn==23.0.0
-# eventlet==0.35.2
