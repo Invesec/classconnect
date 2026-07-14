@@ -20,6 +20,9 @@
           <input type="password" name="password" id="pw-field" class="form-input" placeholder="••••••••" required>
           <button type="button" onclick="togglePw()" style="position:absolute;right:.75rem;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--slate-400);font-size:.85rem;" id="pw-toggle">👁</button>
         </div>
+        <div style="text-align:right;margin-top:.4rem;">
+          <a href="{{ url_for('forgot_password') }}" style="font-size:.8rem;color:var(--blue-600);font-weight:600;text-decoration:none;">Forgot password?</a>
+        </div>
       </div>
       <button type="submit" class="btn btn-primary btn-full btn-lg" id="login-btn">
         <span id="login-text">Sign In</span>

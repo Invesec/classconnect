@@ -1,4 +1,4 @@
-import os, secrets, string, random
+import os, secrets, string, random, threading
 from datetime import datetime, timezone, timedelta
 
 from flask import (Flask, render_template, redirect, url_for, flash,
@@ -22,9 +22,6 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
     f"sqlite:///{os.path.join(basedir, 'instance', 'classconnect.db')}"
 )
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-if app.config['SQLALCHEMY_DATABASE_URI'].startswith('sqlite'):
-    from sqlalchemy.pool import NullPool
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'poolclass': NullPool}
 
 # ── File uploads ──────────────────────────────────────────────────────────────
 app.config['UPLOAD_FOLDER'] = os.path.join(basedir, 'uploads')
@@ -39,11 +36,19 @@ app.config['MAIL_PORT']     = int(os.environ.get('MAIL_PORT', 587))
 app.config['MAIL_USE_TLS']  = os.environ.get('MAIL_USE_TLS',  'true').lower() == 'true'
 app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME', '')
 app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD', '')
-app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_DEFAULT_SENDER',
-                                                    app.config['MAIL_USERNAME'] or 'noreply@classconnect.fuo')
+# IMPORTANT (deliverability): the "From" address MUST be the same mailbox that
+# authenticates via MAIL_USERNAME/MAIL_PASSWORD. Sending through Gmail's SMTP
+# while claiming a "From" on a different, unverified domain (e.g.
+# noreply@classconnect.fuo) fails SPF/DKIM alignment and is a top reason mail
+# lands straight in spam. Only the display NAME is customizable — the address
+# always matches the authenticated account.
+MAIL_SENDER_NAME = os.environ.get('MAIL_SENDER_NAME', 'ClassConnect')
+app.config['MAIL_DEFAULT_SENDER'] = (MAIL_SENDER_NAME, app.config['MAIL_USERNAME']) \
+    if app.config['MAIL_USERNAME'] else 'noreply@classconnect.fuo'
 
 ALLOWED_EXTENSIONS = {'pdf', 'doc', 'docx', 'ppt', 'pptx'}
 OTP_EXPIRY_MINUTES = 10
+RESET_TOKEN_EXPIRY_MINUTES = 30
 
 db       = SQLAlchemy(app)
 mail     = Mail(app)
@@ -67,6 +72,8 @@ class User(UserMixin, db.Model):
     email_verified  = db.Column(db.Boolean, default=False)
     otp             = db.Column(db.String(6))
     otp_expires     = db.Column(db.DateTime)
+    reset_token     = db.Column(db.String(64))
+    reset_token_expires = db.Column(db.DateTime)
     created_at      = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     courses_taught = db.relationship('Course', backref='lecturer', lazy=True,
@@ -90,6 +97,23 @@ class User(UserMixin, db.Model):
         if expires.tzinfo is None:
             expires = expires.replace(tzinfo=timezone.utc)
         return self.otp == code and datetime.now(timezone.utc) < expires
+
+    def generate_reset_token(self):
+        self.reset_token = secrets.token_urlsafe(32)
+        self.reset_token_expires = datetime.now(timezone.utc) + timedelta(minutes=RESET_TOKEN_EXPIRY_MINUTES)
+        return self.reset_token
+
+    def verify_reset_token(self, token):
+        if not self.reset_token or not self.reset_token_expires or not token:
+            return False
+        expires = self.reset_token_expires
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        return secrets.compare_digest(self.reset_token, token) and datetime.now(timezone.utc) < expires
+
+    def clear_reset_token(self):
+        self.reset_token = None
+        self.reset_token_expires = None
 
 
 class Course(db.Model):
@@ -168,6 +192,30 @@ def load_user(user_id):
     return db.session.get(User, int(user_id))
 
 
+def ensure_schema_upgrades():
+    """Add any newly-introduced columns to an existing SQLite database
+    in place, so upgrading the code doesn't wipe or break existing data.
+    Safe to call on every startup — it no-ops once columns already exist."""
+    from sqlalchemy import text, inspect
+    inspector = inspect(db.engine)
+    if 'users' not in inspector.get_table_names():
+        return  # fresh database — db.create_all() will create it with all columns
+    existing_cols = {c['name'] for c in inspector.get_columns('users')}
+    needed = {
+        'reset_token': 'VARCHAR(64)',
+        'reset_token_expires': 'DATETIME',
+    }
+    for col_name, col_type in needed.items():
+        if col_name not in existing_cols:
+            try:
+                db.session.execute(text(f'ALTER TABLE users ADD COLUMN {col_name} {col_type}'))
+                db.session.commit()
+                print(f'[MIGRATION] Added missing column users.{col_name}')
+            except Exception as e:
+                db.session.rollback()
+                print(f'[MIGRATION ERROR] Could not add column {col_name}: {e}')
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def allowed_file(filename):
@@ -182,35 +230,91 @@ def generate_enrolment_code(length=6):
             return code
 
 
+def _send_mail_async(subject, to_email, html, text):
+    """Send an email in a background thread so a slow/unreachable SMTP
+    server can never hang the request that triggered it. Always includes a
+    plain-text part alongside the HTML — mail with only an HTML body is a
+    common spam-filter signal."""
+    def worker():
+        with app.app_context():
+            try:
+                msg = Message(
+                    subject=subject,
+                    recipients=[to_email],
+                    html=html,
+                    body=text,
+                    reply_to=app.config['MAIL_USERNAME'] or None,
+                )
+                mail.send(msg)
+            except Exception as e:
+                print(f"[MAIL ERROR] {e}")
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+
 def send_otp_email(user):
-    """Send OTP to user's email. Falls back silently if mail is unconfigured."""
+    """Send OTP to user's email. Falls back silently if mail is unconfigured,
+    and never blocks the request — the actual send happens on a background
+    thread so a slow SMTP server can't freeze the page."""
     otp = user.generate_otp()
     db.session.commit()
     if not app.config['MAIL_USERNAME']:
         # Email not configured — print OTP to console for local dev
         print(f"\n[DEV] OTP for {user.email}: {otp}\n")
         return
-    try:
-        msg = Message(
-            subject='ClassConnect – Your verification code',
-            recipients=[user.email],
-            html=f"""
-            <div style="font-family:sans-serif;max-width:480px;margin:auto;">
-              <h2 style="color:#1d4ed8;">ClassConnect</h2>
-              <p>Hello {user.full_name},</p>
-              <p>Your one-time verification code is:</p>
-              <div style="font-size:2rem;font-weight:700;letter-spacing:.4rem;
-                          background:#eff6ff;padding:1rem;border-radius:8px;
-                          text-align:center;color:#1e3a8a;">{otp}</div>
-              <p style="color:#6b7280;font-size:.85rem;">
-                This code expires in {OTP_EXPIRY_MINUTES} minutes.<br>
-                If you did not register on ClassConnect, please ignore this email.
-              </p>
-            </div>"""
-        )
-        mail.send(msg)
-    except Exception as e:
-        print(f"[MAIL ERROR] {e}")
+    html = f"""
+    <div style="font-family:sans-serif;max-width:480px;margin:auto;">
+      <h2 style="color:#1d4ed8;">ClassConnect</h2>
+      <p>Hello {user.full_name},</p>
+      <p>Your one-time verification code is:</p>
+      <div style="font-size:2rem;font-weight:700;letter-spacing:.4rem;
+                  background:#eff6ff;padding:1rem;border-radius:8px;
+                  text-align:center;color:#1e3a8a;">{otp}</div>
+      <p style="color:#6b7280;font-size:.85rem;">
+        This code expires in {OTP_EXPIRY_MINUTES} minutes.<br>
+        If you did not register on ClassConnect, please ignore this email.
+      </p>
+    </div>"""
+    text = (
+        f"ClassConnect\n\nHello {user.full_name},\n\n"
+        f"Your one-time verification code is: {otp}\n\n"
+        f"This code expires in {OTP_EXPIRY_MINUTES} minutes.\n"
+        f"If you did not register on ClassConnect, please ignore this email."
+    )
+    _send_mail_async('ClassConnect – Your verification code', user.email, html, text)
+
+
+def send_reset_email(user):
+    """Email a password-reset link. Same non-blocking pattern as OTP email."""
+    token = user.generate_reset_token()
+    db.session.commit()
+    reset_url = url_for('reset_password', token=token, _external=True)
+    if not app.config['MAIL_USERNAME']:
+        print(f"\n[DEV] Password reset link for {user.email}: {reset_url}\n")
+        return
+    html = f"""
+    <div style="font-family:sans-serif;max-width:480px;margin:auto;">
+      <h2 style="color:#1d4ed8;">ClassConnect</h2>
+      <p>Hello {user.full_name},</p>
+      <p>We received a request to reset your password. Click the button below to choose a new one:</p>
+      <p style="text-align:center;margin:1.5rem 0;">
+        <a href="{reset_url}" style="display:inline-block;background:#2563eb;color:white;
+           padding:.75rem 1.5rem;border-radius:8px;text-decoration:none;font-weight:600;">
+           Reset Password</a>
+      </p>
+      <p style="color:#6b7280;font-size:.85rem;">
+        This link expires in {RESET_TOKEN_EXPIRY_MINUTES} minutes.<br>
+        If you did not request a password reset, please ignore this email — your password will stay unchanged.
+      </p>
+    </div>"""
+    text = (
+        f"ClassConnect\n\nHello {user.full_name},\n\n"
+        f"We received a request to reset your password. Open this link to choose a new one:\n"
+        f"{reset_url}\n\n"
+        f"This link expires in {RESET_TOKEN_EXPIRY_MINUTES} minutes.\n"
+        f"If you did not request a password reset, please ignore this email — your password will stay unchanged."
+    )
+    _send_mail_async('ClassConnect – Reset your password', user.email, html, text)
 
 
 def role_required(*roles):
@@ -333,6 +437,49 @@ def login():
 def logout():
     logout_user()
     return redirect(url_for('index'))
+
+
+@app.route('/forgot-password', methods=['GET', 'POST'])
+def forgot_password():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    if request.method == 'POST':
+        email = request.form.get('email', '').strip().lower()
+        user = User.query.filter_by(email=email).first()
+        # Always show the same message whether or not the account exists,
+        # so this form can't be used to check which emails are registered.
+        if user:
+            send_reset_email(user)
+        flash('If an account exists for that email, a reset link has been sent.', 'info')
+        return redirect(url_for('login'))
+    return render_template('forgot_password.html')
+
+
+@app.route('/reset-password/<token>', methods=['GET', 'POST'])
+def reset_password(token):
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    user = User.query.filter_by(reset_token=token).first()
+    if not user or not user.verify_reset_token(token):
+        flash('That reset link is invalid or has expired. Please request a new one.', 'danger')
+        return redirect(url_for('forgot_password'))
+
+    if request.method == 'POST':
+        password = request.form.get('password', '')
+        confirm  = request.form.get('confirm_password', '')
+        if len(password) < 6:
+            flash('Password must be at least 6 characters.', 'danger')
+            return render_template('reset_password.html', token=token)
+        if password != confirm:
+            flash('Passwords do not match.', 'danger')
+            return render_template('reset_password.html', token=token)
+        user.set_password(password)
+        user.clear_reset_token()
+        db.session.commit()
+        flash('Password updated! You can now log in.', 'success')
+        return redirect(url_for('login'))
+
+    return render_template('reset_password.html', token=token)
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -643,6 +790,7 @@ def not_found(e):
 @app.cli.command('init-db')
 def init_db():
     db.create_all()
+    ensure_schema_upgrades()
     if not User.query.filter_by(role='admin').first():
         admin = User(full_name='System Administrator', email='admin@fuo.edu.ng',
                      role='admin', email_verified=True)
@@ -653,18 +801,16 @@ def init_db():
     print('Database initialised.')
 
 
-with app.app_context():
-    os.makedirs(os.path.join(basedir, 'instance'), exist_ok=True)
-    db.create_all()
-    if not User.query.filter_by(role='admin').first():
-        admin = User(full_name='System Administrator', email='admin@fuo.edu.ng',
-                     role='admin', email_verified=True)
-        admin.set_password('Admin@123')
-        db.session.add(admin)
-        db.session.commit()
-        print('Created default admin -> admin@fuo.edu.ng / Admin@123')
-
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    debug_mode = os.environ.get('FLASK_DEBUG', 'true').lower() == 'true'
-    socketio.run(app, debug=debug_mode, host='0.0.0.0', port=port, allow_unsafe_werkzeug=True)
+    with app.app_context():
+        os.makedirs(os.path.join(basedir, 'instance'), exist_ok=True)
+        db.create_all()
+        ensure_schema_upgrades()
+        if not User.query.filter_by(role='admin').first():
+            admin = User(full_name='System Administrator', email='admin@fuo.edu.ng',
+                         role='admin', email_verified=True)
+            admin.set_password('Admin@123')
+            db.session.add(admin)
+            db.session.commit()
+            print('Created default admin -> admin@fuo.edu.ng / Admin@123')
+    socketio.run(app, debug=True, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
