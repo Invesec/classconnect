@@ -19,6 +19,7 @@ except ImportError:
 import os, secrets, string, random
 from datetime import datetime, timezone, timedelta
 
+import requests
 from flask import (Flask, render_template, redirect, url_for, flash,
                    request, abort, send_from_directory, jsonify)
 from flask_sqlalchemy import SQLAlchemy
@@ -63,6 +64,17 @@ app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD', '')
 MAIL_SENDER_NAME = os.environ.get('MAIL_SENDER_NAME', 'ClassConnect')
 app.config['MAIL_DEFAULT_SENDER'] = (MAIL_SENDER_NAME, app.config['MAIL_USERNAME']) \
     if app.config['MAIL_USERNAME'] else 'noreply@classconnect.fuo'
+
+# Render's FREE tier blocks all outbound SMTP traffic (ports 25, 465, 587)
+# as a platform-level restriction — this has nothing to do with credentials
+# or code, and shows up as [Errno 110] ETIMEDOUT. If BREVO_API_KEY is set,
+# email is sent over Brevo's HTTPS API instead (port 443, never blocked),
+# which works on the free tier. If it's not set, falls back to normal SMTP
+# via Flask-Mail (works fine on a paid Render plan, or elsewhere).
+# Sign up free at https://www.brevo.com (300 emails/day free), verify a
+# sender address there, then set BREVO_API_KEY + BREVO_SENDER_EMAIL.
+app.config['BREVO_API_KEY']      = os.environ.get('BREVO_API_KEY', '')
+app.config['BREVO_SENDER_EMAIL'] = os.environ.get('BREVO_SENDER_EMAIL', app.config['MAIL_USERNAME'])
 
 ALLOWED_EXTENSIONS = {'pdf', 'doc', 'docx', 'ppt', 'pptx'}
 OTP_EXPIRY_MINUTES = 10
@@ -248,11 +260,64 @@ def generate_enrolment_code(length=6):
             return code
 
 
+def _send_via_brevo(subject, to_email, html, text):
+    """Send via Brevo's HTTPS API (port 443 — never blocked). Returns True
+    on success, False on failure (caller decides whether to fall back)."""
+    try:
+        resp = requests.post(
+            'https://api.brevo.com/v3/smtp/email',
+            headers={
+                'api-key': app.config['BREVO_API_KEY'],
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+            },
+            json={
+                'sender': {'name': MAIL_SENDER_NAME, 'email': app.config['BREVO_SENDER_EMAIL']},
+                'to': [{'email': to_email}],
+                'subject': subject,
+                'htmlContent': html,
+                'textContent': text,
+                'replyTo': {'email': app.config['BREVO_SENDER_EMAIL']},
+            },
+            timeout=10,
+        )
+        if resp.status_code in (200, 201):
+            return True
+        print(f"[BREVO ERROR] {resp.status_code}: {resp.text[:300]}")
+        return False
+    except Exception as e:
+        print(f"[BREVO ERROR] {e}")
+        return False
+
+
+def _send_via_smtp(subject, to_email, html, text):
+    """Send via Flask-Mail/SMTP. Only works if outbound SMTP isn't blocked
+    (i.e. NOT Render's free tier — see BREVO_API_KEY above for the
+    free-tier-compatible alternative)."""
+    try:
+        msg = Message(
+            subject=subject,
+            recipients=[to_email],
+            html=html,
+            body=text,
+            reply_to=app.config['MAIL_USERNAME'] or None,
+        )
+        mail.send(msg)
+        return True
+    except Exception as e:
+        print(f"[MAIL ERROR] {e}")
+        return False
+
+
 def _send_mail_async(subject, to_email, html, text):
-    """Send an email in a background task so a slow/unreachable SMTP server
+    """Send an email in a background task so a slow/unreachable mail server
     can never hang the request that triggered it. Always includes a
     plain-text part alongside the HTML — mail with only an HTML body is a
     common spam-filter signal.
+
+    Tries Brevo's HTTP API first if configured (works on Render's free
+    tier, where outbound SMTP ports are blocked entirely), then falls back
+    to SMTP if Brevo isn't configured or fails.
 
     Uses socketio.start_background_task() rather than a raw threading.Thread.
     Flask-SocketIO picks the right underlying primitive (real OS thread,
@@ -263,17 +328,11 @@ def _send_mail_async(subject, to_email, html, text):
     un-acquired lock)."""
     def worker():
         with app.app_context():
-            try:
-                msg = Message(
-                    subject=subject,
-                    recipients=[to_email],
-                    html=html,
-                    body=text,
-                    reply_to=app.config['MAIL_USERNAME'] or None,
-                )
-                mail.send(msg)
-            except Exception as e:
-                print(f"[MAIL ERROR] {e}")
+            if app.config['BREVO_API_KEY']:
+                if _send_via_brevo(subject, to_email, html, text):
+                    return
+                print("[MAIL] Brevo send failed, falling back to SMTP...")
+            _send_via_smtp(subject, to_email, html, text)
     socketio.start_background_task(worker)
 
 
@@ -283,8 +342,8 @@ def send_otp_email(user):
     thread so a slow SMTP server can't freeze the page."""
     otp = user.generate_otp()
     db.session.commit()
-    if not app.config['MAIL_USERNAME']:
-        # Email not configured — print OTP to console for local dev
+    if not app.config['MAIL_USERNAME'] and not app.config['BREVO_API_KEY']:
+        # No email method configured — print OTP to console for local dev
         print(f"\n[DEV] OTP for {user.email}: {otp}\n")
         return
     html = f"""
@@ -314,7 +373,7 @@ def send_reset_email(user):
     token = user.generate_reset_token()
     db.session.commit()
     reset_url = url_for('reset_password', token=token, _external=True)
-    if not app.config['MAIL_USERNAME']:
+    if not app.config['MAIL_USERNAME'] and not app.config['BREVO_API_KEY']:
         print(f"\n[DEV] Password reset link for {user.email}: {reset_url}\n")
         return
     html = f"""
