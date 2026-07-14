@@ -801,7 +801,12 @@ def init_db():
     print('Database initialised.')
 
 
-if __name__ == '__main__':
+def bootstrap_db():
+    """Create the instance folder + database + default admin, and apply any
+    pending column migrations. Runs unconditionally at import time (not just
+    under `if __name__ == '__main__'`) so this also works correctly when the
+    app is started via gunicorn/eventlet in production, where this module is
+    imported rather than executed directly."""
     with app.app_context():
         os.makedirs(os.path.join(basedir, 'instance'), exist_ok=True)
         db.create_all()
@@ -813,4 +818,9 @@ if __name__ == '__main__':
             db.session.add(admin)
             db.session.commit()
             print('Created default admin -> admin@fuo.edu.ng / Admin@123')
+
+
+bootstrap_db()
+
+if __name__ == '__main__':
     socketio.run(app, debug=True, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
