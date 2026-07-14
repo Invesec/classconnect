@@ -1,3 +1,21 @@
+# CRITICAL: this must be the very first thing that runs in this file, before
+# any other import. If Render's deployment is using an eventlet worker
+# (gunicorn --worker-class eventlet), eventlet needs to monkey-patch Python's
+# threading/socket/ssl internals before ANY other module (Flask, SQLAlchemy,
+# sqlite3, etc.) creates lock objects — otherwise those locks stay as
+# regular OS locks that eventlet's greenlets can't coordinate with, which is
+# exactly the "RuntimeError: cannot notify on un-acquired lock" /
+# "N RLock(s) were not greened" errors. Relying on gunicorn's own worker
+# startup to do this at the right time is fragile depending on preload
+# settings, so we do it ourselves, unconditionally, as early as possible.
+# If eventlet isn't installed (e.g. running via plain `python app.py` in
+# development), this is a harmless no-op.
+try:
+    import eventlet
+    eventlet.monkey_patch()
+except ImportError:
+    pass
+
 import os, secrets, string, random
 from datetime import datetime, timezone, timedelta
 
