@@ -825,9 +825,19 @@ def bootstrap_db():
             db.session.add(admin)
             db.session.commit()
             print('Created default admin -> admin@fuo.edu.ng / Admin@123')
+        # Critical: dispose of the connection pool used during this bootstrap.
+        # If the app is imported once and then forked into multiple worker
+        # processes (gunicorn "preload_app"), each fork would otherwise
+        # inherit this pool's internal locks in whatever state they happened
+        # to be in at fork time — which can permanently break with
+        # "RuntimeError: cannot notify on un-acquired lock" the moment a
+        # forked worker tries to use it. Disposing here forces every worker
+        # to lazily open its own fresh connection instead of reusing this one.
+        db.engine.dispose()
 
 
 bootstrap_db()
 
 if __name__ == '__main__':
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
+    port = int(os.environ.get('PORT', 5000))
+    socketio.run(app, debug=True, host='0.0.0.0', port=port, allow_unsafe_werkzeug=True)
