@@ -1,7 +1,13 @@
-# SMC Signal Bot — Python Dependencies
-# Install with: pip install -r requirements.txt
-
-MetaTrader5>=5.0.45
-pandas>=1.5.0
-numpy>=1.23.0
-requests>=2.28.0
+Flask==3.0.3
+Flask-SQLAlchemy==3.1.1
+Flask-Login==0.6.3
+Flask-Mail==0.10.0
+Flask-SocketIO==5.3.6
+Werkzeug==3.0.4
+python-dotenv==1.0.1
+requests==2.32.3
+# Uncomment for MySQL instead of default SQLite:
+# PyMySQL==1.1.1
+# Uncomment for production (VPS):
+# gunicorn==23.0.0
+# eventlet==0.35.2
