@@ -1,4 +1,4 @@
-import os, secrets, string, random, threading
+import os, secrets, string, random
 from datetime import datetime, timezone, timedelta
 
 from flask import (Flask, render_template, redirect, url_for, flash,
@@ -231,10 +231,18 @@ def generate_enrolment_code(length=6):
 
 
 def _send_mail_async(subject, to_email, html, text):
-    """Send an email in a background thread so a slow/unreachable SMTP
-    server can never hang the request that triggered it. Always includes a
+    """Send an email in a background task so a slow/unreachable SMTP server
+    can never hang the request that triggered it. Always includes a
     plain-text part alongside the HTML — mail with only an HTML body is a
-    common spam-filter signal."""
+    common spam-filter signal.
+
+    Uses socketio.start_background_task() rather than a raw threading.Thread.
+    Flask-SocketIO picks the right underlying primitive (real OS thread,
+    eventlet greenlet, or gevent greenlet) to match whatever async_mode /
+    gunicorn worker class is actually running the app — a raw
+    threading.Thread would fight with an eventlet worker and corrupt
+    SQLAlchemy's connection-pool locks (RuntimeError: cannot notify on
+    un-acquired lock)."""
     def worker():
         with app.app_context():
             try:
@@ -248,8 +256,7 @@ def _send_mail_async(subject, to_email, html, text):
                 mail.send(msg)
             except Exception as e:
                 print(f"[MAIL ERROR] {e}")
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
+    socketio.start_background_task(worker)
 
 
 def send_otp_email(user):
