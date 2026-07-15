@@ -693,6 +693,45 @@ def session_room(session_id):
                            participants=participants, attendance_ids=attendance_ids)
 
 
+@app.route('/api/turn-credentials')
+@login_required
+def turn_credentials():
+    """Return fresh ICE servers (STUN + TURN) for the browser's
+    RTCPeerConnection. TURN is essential when the two peers are on
+    different networks with restrictive NATs (e.g. one on mobile data,
+    one on wifi) — STUN alone frequently can't establish that connection,
+    which shows up as signalling working (peers see each other in the
+    room) but video never actually connecting.
+
+    Uses the free Open Relay TURN service (metered.ca/tools/openrelay) —
+    sign up free, create an app, get your API key. Set TURN_API_KEY and
+    TURN_APP_NAME (the app name you chose at signup — it becomes part of
+    the API URL: https://<appname>.metered.live/...) as env vars. The key
+    is only ever used server-side here, never sent to the browser. Falls
+    back to Google's public STUN-only servers if not configured, which
+    still works fine for peers on the same network."""
+    fallback = {'iceServers': [
+        {'urls': 'stun:stun.l.google.com:19302'},
+        {'urls': 'stun:stun1.l.google.com:19302'},
+    ]}
+    api_key  = os.environ.get('TURN_API_KEY', '')
+    app_name = os.environ.get('TURN_APP_NAME', '')
+    if not api_key or not app_name:
+        return jsonify(fallback)
+    try:
+        resp = requests.get(
+            f'https://{app_name}.metered.live/api/v1/turn/credentials',
+            params={'apiKey': api_key},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            return jsonify({'iceServers': resp.json()})
+        print(f'[TURN ERROR] {resp.status_code}: {resp.text[:200]}')
+    except Exception as e:
+        print(f'[TURN ERROR] {e}')
+    return jsonify(fallback)
+
+
 @app.route('/sessions/<int:session_id>/participants')
 @login_required
 def session_participants_json(session_id):
