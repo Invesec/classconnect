@@ -21,7 +21,7 @@
   <div class="stat-card animate-up">
     <div class="stat-icon stat-icon-green">👥</div>
     <div>
-      <div class="stat-num">{{ courses|sum(attribute='enrolments')|list|length }}</div>
+      <div class="stat-num">{{ courses|map(attribute='enrolments')|map('length')|sum }}</div>
       <div class="stat-label">Students</div>
     </div>
   </div>
@@ -36,7 +36,7 @@
   <div class="stat-card animate-up">
     <div class="stat-icon stat-icon-purple">📁</div>
     <div>
-      <div class="stat-num">{{ courses|sum(attribute='materials')|list|length }}</div>
+      <div class="stat-num">{{ courses|map(attribute='materials')|map('length')|sum }}</div>
       <div class="stat-label">Materials</div>
     </div>
   </div>
