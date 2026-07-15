@@ -6,6 +6,9 @@ Flask-SocketIO==5.3.6
 Werkzeug==3.0.4
 python-dotenv==1.0.1
 requests==2.32.3
+# Postgres driver — required when DATABASE_URL points at a real Postgres
+# database (e.g. Neon's free tier) instead of the local SQLite fallback.
+psycopg2-binary==2.9.9
 # Required in production: Render's Start Command runs
 # `gunicorn --worker-class eventlet -w 1 app:app`, so both of these must be
 # actual installed dependencies, not commented out — without them the build

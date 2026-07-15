@@ -36,10 +36,21 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
 
 # ── Database ──────────────────────────────────────────────────────────────────
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
+# DATABASE_URL, if set, points at a real Postgres database (e.g. Neon's free
+# tier) — this is what actually persists data across Render restarts/redeploys.
+# Falls back to a local SQLite file if unset (fine for local development, but
+# NOT persistent on Render's free tier — every restart wipes it).
+_db_url = os.environ.get(
     'DATABASE_URL',
     f"sqlite:///{os.path.join(basedir, 'instance', 'classconnect.db')}"
 )
+# Some providers (Neon, Heroku, etc.) hand out connection strings starting
+# with "postgres://", which older/newer SQLAlchemy versions reject — it
+# requires the "postgresql://" scheme instead. Normalize it here so pasting
+# a connection string straight from the provider's dashboard just works.
+if _db_url.startswith('postgres://'):
+    _db_url = _db_url.replace('postgres://', 'postgresql://', 1)
+app.config['SQLALCHEMY_DATABASE_URI'] = _db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # ── File uploads ──────────────────────────────────────────────────────────────
@@ -223,17 +234,20 @@ def load_user(user_id):
 
 
 def ensure_schema_upgrades():
-    """Add any newly-introduced columns to an existing SQLite database
-    in place, so upgrading the code doesn't wipe or break existing data.
-    Safe to call on every startup — it no-ops once columns already exist."""
+    """Add any newly-introduced columns to an existing database in place,
+    so upgrading the code doesn't wipe or break existing data. Safe to call
+    on every startup — it no-ops once columns already exist. Works against
+    both SQLite (local dev) and Postgres (production), since the two use
+    different type names for the same concept (e.g. DATETIME vs TIMESTAMP)."""
     from sqlalchemy import text, inspect
     inspector = inspect(db.engine)
     if 'users' not in inspector.get_table_names():
         return  # fresh database — db.create_all() will create it with all columns
     existing_cols = {c['name'] for c in inspector.get_columns('users')}
+    is_postgres = db.engine.dialect.name == 'postgresql'
     needed = {
         'reset_token': 'VARCHAR(64)',
-        'reset_token_expires': 'DATETIME',
+        'reset_token_expires': 'TIMESTAMP' if is_postgres else 'DATETIME',
     }
     for col_name, col_type in needed.items():
         if col_name not in existing_cols:
