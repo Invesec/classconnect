@@ -9,12 +9,34 @@
  *   CC_USER_NAME   – current user display name (string)
  */
 
-const STUN_SERVERS = {
+// ICE servers (STUN + TURN) are fetched from the backend at startup rather
+// than hardcoded, so a real TURN server can be used without embedding its
+// secret API key in client-side JS. Falls back to STUN-only if the fetch
+// fails, which still works fine for peers on the same network.
+let ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
   ]
 };
+
+async function loadIceServers() {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000); // never hang more than 6s
+    const res = await fetch('/api/turn-credentials', { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.iceServers && data.iceServers.length) {
+        ICE_SERVERS = { iceServers: data.iceServers };
+        console.log('TURN credentials loaded:', data.iceServers.length, 'servers');
+      }
+    }
+  } catch (e) {
+    console.warn('Could not load TURN credentials in time, using STUN-only fallback', e);
+  }
+}
 
 let socket;
 let localStream   = null;   // camera / mic stream
@@ -167,7 +189,7 @@ function addLocalTracksToPeers() {
 function createPeerConnection(remoteUserId, remoteName) {
   if (peers[remoteUserId]) return peers[remoteUserId];
 
-  const pc = new RTCPeerConnection(STUN_SERVERS);
+  const pc = new RTCPeerConnection(ICE_SERVERS);
   peers[remoteUserId]    = pc;
   peerNames[remoteUserId] = remoteName;
 
@@ -306,6 +328,11 @@ function wireButtons() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Buttons and signalling must work immediately regardless of network
+  // speed — TURN credentials aren't needed until an actual peer connection
+  // is created (later, when someone joins), so loading them must never
+  // block basic page interactivity like the Camera button.
   initSocket();
   wireButtons();
+  loadIceServers(); // fires in the background, has its own 6s timeout
 });
