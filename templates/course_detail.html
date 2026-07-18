@@ -131,12 +131,55 @@
   {% endif %}
 </div>
 
+{% if current_user.role == 'lecturer' %}
+<!-- Danger zone -->
+<div class="card animate-up" style="border-color:#fca5a5;background:#fff5f5;">
+  <div class="card-header">
+    <div class="card-title" style="color:var(--red-600);">⚠ Danger Zone</div>
+  </div>
+  <p class="text-muted" style="margin-bottom:.85rem;">
+    Deleting this course permanently removes it, every enrolled student's enrolment,
+    all class sessions and attendance records, and all uploaded materials. This cannot be undone.
+  </p>
+  <button class="btn btn-danger" onclick="openDeleteModal()">🗑 Delete Course</button>
+</div>
+
+<div id="delete-modal-backdrop" class="modal-backdrop">
+  <div class="modal">
+    <button class="close-x" onclick="closeDeleteModal()">✕</button>
+    <h3 style="margin-bottom:.5rem;">Delete "{{ course.course_code }}"?</h3>
+    <p class="text-muted" style="margin-bottom:1rem;">
+      Type <strong>{{ course.course_code }}</strong> below to confirm. This permanently deletes
+      the course, all enrolments, sessions, attendance records, and materials.
+    </p>
+    <form method="POST" action="{{ url_for('delete_course', course_id=course.id) }}">
+      <div class="field">
+        <input type="text" id="confirm-code" class="form-input" placeholder="{{ course.course_code }}" autocomplete="off">
+      </div>
+      <button type="submit" class="btn btn-danger btn-block" id="confirm-delete-btn" disabled>Delete Permanently</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
 <script>
 function copyCode() {
   navigator.clipboard.writeText('{{ course.enrolment_code }}').then(() => {
     const t = document.getElementById('copy-toast');
     t.style.display = 'inline';
     setTimeout(() => t.style.display = 'none', 2000);
+  });
+}
+function openDeleteModal() {
+  document.getElementById('delete-modal-backdrop').classList.add('open');
+}
+function closeDeleteModal() {
+  document.getElementById('delete-modal-backdrop').classList.remove('open');
+}
+const confirmInput = document.getElementById('confirm-code');
+if (confirmInput) {
+  confirmInput.addEventListener('input', function() {
+    document.getElementById('confirm-delete-btn').disabled = this.value.trim() !== '{{ course.course_code }}';
   });
 }
 function showFileName(input) {

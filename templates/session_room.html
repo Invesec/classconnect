@@ -42,8 +42,17 @@ const CC_USER_NAME  = {{ current_user.full_name | tojson }};
     <button class="btn-video btn-video-primary" id="btn-camera" data-active="0">📷 Camera</button>
     <button class="btn-video btn-video-secondary" id="btn-screen" data-active="0">🖥 Screen</button>
     <button class="btn-video btn-video-secondary" id="btn-mute">🎙 Mute</button>
+    {% if current_user.role == 'student' %}
+    <button class="btn-video btn-video-secondary" id="btn-raise-hand" data-active="0">🖐 Raise Hand</button>
+    {% endif %}
     <span id="video-status" class="video-status">Connecting to video server…</span>
   </div>
+  {% if current_user.role == 'lecturer' %}
+  <div id="raised-hands-panel" class="raised-hands-panel" style="display:none;">
+    <div class="raised-hands-title">🖐 Students waiting to ask a question</div>
+    <div id="raised-hands-list"></div>
+  </div>
+  {% endif %}
   <div id="video-grid" class="video-grid">
     <div class="video-empty" id="video-empty">
       Enable your camera or wait for others to join the video call.
@@ -70,7 +79,7 @@ const CC_USER_NAME  = {{ current_user.full_name | tojson }};
   </div>
   <div class="table-wrap">
     <table id="participant-table">
-      <thead><tr><th>Student</th><th>Matric No.</th><th>Joined</th><th>Attendance</th></tr></thead>
+      <thead><tr><th>Student</th><th>Matric No.</th><th>Joined</th><th>Attendance</th>{% if current_user.role == 'lecturer' %}<th>Mic</th>{% endif %}</tr></thead>
       <tbody>
         {% for p in participants %}
         <tr>
@@ -84,9 +93,15 @@ const CC_USER_NAME  = {{ current_user.full_name | tojson }};
             <span class="badge badge-absent">Not yet</span>
             {% endif %}
           </td>
+          {% if current_user.role == 'lecturer' %}
+          <td>
+            <button class="btn btn-sm btn-secondary" onclick="forceMuteStudent({{ p.student_id }})" title="Mute this student">🔇</button>
+            <button class="btn btn-sm btn-secondary" onclick="forceUnmuteStudent({{ p.student_id }})" title="Ask to unmute">🎙</button>
+          </td>
+          {% endif %}
         </tr>
         {% else %}
-        <tr><td class="table-empty" colspan="4">No students have joined yet.</td></tr>
+        <tr><td class="table-empty" colspan="{% if current_user.role == 'lecturer' %}5{% else %}4{% endif %}">No students have joined yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -107,7 +122,7 @@ async function refreshParticipants() {
     const tbody = document.querySelector('#participant-table tbody');
     document.getElementById('participant-count').textContent = data.participants.length;
     if (!data.participants.length) {
-      tbody.innerHTML = '<tr><td class="table-empty" colspan="4">No students have joined yet.</td></tr>';
+      tbody.innerHTML = '<tr><td class="table-empty" colspan="{% if current_user.role == 'lecturer' %}5{% else %}4{% endif %}">No students have joined yet.</td></tr>';
       return;
     }
     tbody.innerHTML = data.participants.map(p => `
@@ -118,6 +133,12 @@ async function refreshParticipants() {
         <td>${p.present
           ? '<span class="badge badge-present">Present</span>'
           : '<span class="badge badge-absent">Not yet</span>'}</td>
+        {% if current_user.role == 'lecturer' %}
+        <td>
+          <button class="btn btn-sm btn-secondary" onclick="forceMuteStudent(${p.student_id})" title="Mute this student">🔇</button>
+          <button class="btn btn-sm btn-secondary" onclick="forceUnmuteStudent(${p.student_id})" title="Ask to unmute">🎙</button>
+        </td>
+        {% endif %}
       </tr>`).join('');
     // Remove empty video placeholder
     const grid = document.getElementById('video-grid');

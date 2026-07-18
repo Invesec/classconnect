@@ -643,6 +643,30 @@ def view_course(course_id):
                            materials=materials, my_attendance=my_attendance)
 
 
+@app.route('/courses/<int:course_id>/delete', methods=['POST'])
+@login_required
+@role_required('lecturer')
+def delete_course(course_id):
+    course = db.get_or_404(Course, course_id)
+    if course.lecturer_id != current_user.id:
+        abort(403)
+    title = course.title
+    # Collect uploaded material file paths before the DB rows (and their
+    # cascade) are gone, so we can also clean up the actual files on disk.
+    stored_filenames = [m.stored_filename for m in course.materials]
+    db.session.delete(course)  # cascades to enrolments, sessions, materials (see model relationships)
+    db.session.commit()
+    for fname in stored_filenames:
+        try:
+            path = os.path.join(app.config['UPLOAD_FOLDER'], fname)
+            if os.path.isfile(path):
+                os.remove(path)
+        except Exception as e:
+            print(f'[DELETE_COURSE] Could not remove file {fname}: {e}')
+    flash(f'Course "{title}" and all its data have been deleted.', 'success')
+    return redirect(url_for('dashboard'))
+
+
 @app.route('/courses/enrol', methods=['POST'])
 @login_required
 @role_required('student')
@@ -908,6 +932,55 @@ def on_answer(data):
 def on_ice_candidate(data):
     room = f"session_{data['session_id']}"
     emit('ice-candidate', data, to=room, skip_sid=request.sid)  # noqa
+
+
+# ── Live-session moderation & interaction ─────────────────────────────────────
+
+@socketio.on('raise-hand')
+def on_raise_hand(data):
+    """A student signals they want to ask a question. Relayed to everyone
+    in the room (lecturer's UI shows it as an actionable list; other
+    students just see who has their hand up, same as any classroom)."""
+    room = f"session_{data['session_id']}"
+    emit('hand-raised', {'user_id': data['user_id'], 'user_name': data['user_name']},
+         to=room, skip_sid=request.sid)
+
+
+@socketio.on('lower-hand')
+def on_lower_hand(data):
+    room = f"session_{data['session_id']}"
+    emit('hand-lowered', {'user_id': data['user_id']}, to=room, skip_sid=request.sid)
+
+
+@socketio.on('spotlight-student')
+def on_spotlight_student(data):
+    """Lecturer picks a student (usually one with a raised hand) to be
+    visually featured/enlarged for everyone in the session. Sending
+    user_id=null clears the spotlight. Lecturer-only."""
+    if not current_user.is_authenticated or current_user.role != 'lecturer':
+        return
+    room = f"session_{data['session_id']}"
+    emit('spotlight-changed', {'user_id': data.get('user_id')}, to=room)  # includes sender, for UI consistency
+
+
+@socketio.on('force-mute')
+def on_force_mute(data):
+    """Lecturer mutes a specific student's mic. The server only relays this
+    request — the student's own browser is what actually disables their
+    track, same pattern used by Zoom/Meet/Teams host controls. Lecturer-only."""
+    if not current_user.is_authenticated or current_user.role != 'lecturer':
+        return
+    room = f"session_{data['session_id']}"
+    emit('force-mute', {'user_id': data['target_user_id']}, to=room, skip_sid=request.sid)
+
+
+@socketio.on('force-unmute')
+def on_force_unmute(data):
+    """Lecturer asks a specific student to unmute. Lecturer-only."""
+    if not current_user.is_authenticated or current_user.role != 'lecturer':
+        return
+    room = f"session_{data['session_id']}"
+    emit('force-unmute', {'user_id': data['target_user_id']}, to=room, skip_sid=request.sid)
 
 
 # ── Error handlers ────────────────────────────────────────────────────────────

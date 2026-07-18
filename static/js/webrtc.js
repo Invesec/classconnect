@@ -39,8 +39,14 @@ async function loadIceServers() {
 }
 
 let socket;
-let localStream   = null;   // camera / mic stream
-let screenStream  = null;   // screen share stream
+let localStream       = null;   // camera / mic stream
+let screenStream       = null;   // screen share stream
+let currentVideoTrack  = null;   // whichever video track is CURRENTLY being sent
+                                  // (camera or screen) — new peer connections
+                                  // must use this, not always localStream's
+                                  // original camera track, or a peer that
+                                  // joins mid-screen-share sees a stale/no
+                                  // camera feed instead of the live screen.
 const peers       = {};     // { user_id: RTCPeerConnection }
 const peerNames   = {};     // { user_id: display_name }
 
@@ -67,10 +73,32 @@ function createVideoTile(userId, name, muted = false) {
   label.className  = 'video-label';
   label.textContent = name;
 
+  // Fullscreen toggle — makes the tile fill the phone/laptop screen for a
+  // much clearer view, especially useful on small mobile screens where the
+  // default grid tile is quite small.
+  const fsBtn = document.createElement('button');
+  fsBtn.className = 'video-fullscreen-btn';
+  fsBtn.type = 'button';
+  fsBtn.title = 'Fullscreen';
+  fsBtn.textContent = '⛶';
+  fsBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleTileFullscreen(tile);
+  });
+
   tile.appendChild(video);
   tile.appendChild(label);
+  tile.appendChild(fsBtn);
   getVideoGrid().appendChild(tile);
   return video;
+}
+
+function toggleTileFullscreen(tile) {
+  if (document.fullscreenElement === tile) {
+    document.exitFullscreen();
+  } else if (tile.requestFullscreen) {
+    tile.requestFullscreen().catch(() => {});
+  }
 }
 
 function removeVideoTile(userId) {
@@ -88,6 +116,7 @@ function setVideoStream(userId, stream) {
 async function startCamera() {
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    currentVideoTrack = localStream.getVideoTracks()[0] || null;
     createVideoTile(CC_USER_ID, CC_USER_NAME + ' (You)', true);
     setVideoStream(CC_USER_ID, localStream);
     addLocalTracksToPeers();
@@ -121,8 +150,9 @@ async function shareScreen() {
   try {
     screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
     const videoTrack = screenStream.getVideoTracks()[0];
+    currentVideoTrack = videoTrack;
 
-    // Replace video track in all peer connections
+    // Replace video track in all EXISTING peer connections
     Object.values(peers).forEach(pc => {
       const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
       if (sender) sender.replaceTrack(videoTrack);
@@ -152,12 +182,14 @@ function stopScreenShare() {
   // Restore camera track if available
   if (localStream) {
     const camTrack = localStream.getVideoTracks()[0];
+    currentVideoTrack = camTrack || null;
     Object.values(peers).forEach(pc => {
       const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
       if (sender && camTrack) sender.replaceTrack(camTrack);
     });
     setVideoStream(CC_USER_ID, localStream);
   } else {
+    currentVideoTrack = null;
     removeVideoTile(CC_USER_ID);
   }
   setStatus('Screen share stopped.');
@@ -173,14 +205,105 @@ function toggleMute() {
   });
 }
 
+// ── Raise hand (students) ───────────────────────────────────────────────────
+
+let handRaised = false;
+
+function toggleRaiseHand() {
+  handRaised = !handRaised;
+  socket.emit(handRaised ? 'raise-hand' : 'lower-hand', {
+    session_id: CC_SESSION_ID, user_id: CC_USER_ID, user_name: CC_USER_NAME
+  });
+  const btn = document.getElementById('btn-raise-hand');
+  if (btn) {
+    btn.textContent = handRaised ? '🖐 Hand Raised' : '🖐 Raise Hand';
+    btn.dataset.active = handRaised ? '1' : '0';
+  }
+}
+
+// ── Spotlight & raised-hands panel (lecturer) ───────────────────────────────
+
+function spotlightStudent(userId) {
+  socket.emit('spotlight-student', { session_id: CC_SESSION_ID, user_id: userId });
+}
+
+function clearSpotlight() {
+  socket.emit('spotlight-student', { session_id: CC_SESSION_ID, user_id: null });
+}
+
+function applySpotlight(userId) {
+  document.querySelectorAll('.video-tile.spotlight').forEach(t => t.classList.remove('spotlight'));
+  if (userId != null) {
+    const tile = document.getElementById(`tile-${userId}`);
+    if (tile) tile.classList.add('spotlight');
+  }
+}
+
+function addRaisedHandEntry(userId, userName) {
+  const panel = document.getElementById('raised-hands-panel');
+  const list  = document.getElementById('raised-hands-list');
+  if (!panel || !list) return;
+  panel.style.display = 'block';
+  if (document.getElementById(`hand-${userId}`)) return;
+  const row = document.createElement('div');
+  row.id = `hand-${userId}`;
+  row.className = 'raised-hand-row';
+  row.innerHTML = `<span>🖐 ${userName}</span>`;
+  const spotlightBtn = document.createElement('button');
+  spotlightBtn.className = 'btn btn-sm btn-primary';
+  spotlightBtn.textContent = 'Spotlight';
+  spotlightBtn.addEventListener('click', () => spotlightStudent(userId));
+  row.appendChild(spotlightBtn);
+  list.appendChild(row);
+}
+
+function removeRaisedHandEntry(userId) {
+  const row = document.getElementById(`hand-${userId}`);
+  if (row) row.remove();
+  const list = document.getElementById('raised-hands-list');
+  const panel = document.getElementById('raised-hands-panel');
+  if (list && panel && list.children.length === 0) panel.style.display = 'none';
+}
+
+// ── Remote mute (lecturer controls a specific student's mic) ───────────────
+
+function forceMuteStudent(userId) {
+  socket.emit('force-mute', { session_id: CC_SESSION_ID, target_user_id: userId });
+}
+
+function forceUnmuteStudent(userId) {
+  socket.emit('force-unmute', { session_id: CC_SESSION_ID, target_user_id: userId });
+}
+
+function applyForcedMute(muted) {
+  // Runs on the STUDENT's own browser when the lecturer requests a mute/
+  // unmute — the server only relays the request, the client enforces it
+  // on their own mic track (same pattern Zoom/Meet/Teams use for host
+  // mute controls, since a mesh WebRTC server never has direct control
+  // over another peer's outgoing media).
+  if (!localStream) return;
+  localStream.getAudioTracks().forEach(t => { t.enabled = !muted; });
+  const btn = document.getElementById('btn-mute');
+  if (btn) btn.textContent = muted ? '🔇 Unmute' : '🎙 Mute';
+  setStatus(muted ? 'Your lecturer muted your mic.' : 'Your lecturer unmuted your mic.');
+}
+
 function addLocalTracksToPeers() {
   if (!localStream) return;
   Object.values(peers).forEach(pc => {
-    localStream.getTracks().forEach(track => {
-      // Avoid adding duplicate senders
+    // Audio always comes from the mic (localStream)
+    localStream.getAudioTracks().forEach(track => {
       const alreadyAdded = pc.getSenders().find(s => s.track === track);
       if (!alreadyAdded) pc.addTrack(track, localStream);
     });
+    // Video: use whatever is CURRENTLY live (camera or screen), not always
+    // localStream's original camera track — otherwise a peer this function
+    // runs for after screen-sharing has started would get the stale camera
+    // feed instead of the actual screen content.
+    if (currentVideoTrack) {
+      const alreadyAdded = pc.getSenders().find(s => s.track === currentVideoTrack);
+      if (!alreadyAdded) pc.addTrack(currentVideoTrack, localStream);
+    }
   });
 }
 
@@ -193,9 +316,16 @@ function createPeerConnection(remoteUserId, remoteName) {
   peers[remoteUserId]    = pc;
   peerNames[remoteUserId] = remoteName;
 
-  // Add local tracks if we have them
+  // Add local tracks if we have them — audio from the mic, video from
+  // whatever is CURRENTLY live (camera or screen). This matters when a
+  // remote peer joins/connects after screen-sharing has already started:
+  // without this, they'd get the original camera track instead of the
+  // live screen content.
   if (localStream) {
-    localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+    localStream.getAudioTracks().forEach(t => pc.addTrack(t, localStream));
+  }
+  if (currentVideoTrack) {
+    pc.addTrack(currentVideoTrack, localStream || new MediaStream([currentVideoTrack]));
   }
 
   pc.onicecandidate = ({ candidate }) => {
@@ -299,6 +429,13 @@ function initSocket() {
   });
 
   socket.on('disconnect', () => setStatus('Disconnected from video server.'));
+
+  // ── Live-session interaction events ──────────────────────────────────────
+  socket.on('hand-raised', ({ user_id, user_name }) => addRaisedHandEntry(user_id, user_name));
+  socket.on('hand-lowered', ({ user_id }) => removeRaisedHandEntry(user_id));
+  socket.on('spotlight-changed', ({ user_id }) => applySpotlight(user_id));
+  socket.on('force-mute', ({ user_id }) => { if (user_id === CC_USER_ID) applyForcedMute(true); });
+  socket.on('force-unmute', ({ user_id }) => { if (user_id === CC_USER_ID) applyForcedMute(false); });
 }
 
 // ── Button wiring (called after DOM ready) ────────────────────────────────────
@@ -317,6 +454,9 @@ function wireButtons() {
   });
 
   if (btnMute) btnMute.addEventListener('click', toggleMute);
+
+  const btnHand = document.getElementById('btn-raise-hand');
+  if (btnHand) btnHand.addEventListener('click', toggleRaiseHand);
 
   // Clean up on page unload
   window.addEventListener('beforeunload', () => {
