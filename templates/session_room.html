@@ -6,6 +6,8 @@
 const CC_SESSION_ID = {{ session.id }};
 const CC_USER_ID    = {{ current_user.id }};
 const CC_USER_NAME  = {{ current_user.full_name | tojson }};
+const CC_USER_ROLE  = {{ current_user.role | tojson }};
+const CC_COURSE_ID  = {{ course.id }};
 </script>
 
 <div class="session-header animate-fade">
@@ -45,12 +47,19 @@ const CC_USER_NAME  = {{ current_user.full_name | tojson }};
     {% if current_user.role == 'student' %}
     <button class="btn-video btn-video-secondary" id="btn-raise-hand" data-active="0">🖐 Raise Hand</button>
     {% endif %}
+    {% if current_user.role == 'lecturer' %}
+    <button class="btn-video btn-video-secondary" id="btn-record" data-active="0">⏺ Record Session</button>
+    {% endif %}
     <span id="video-status" class="video-status">Connecting to video server…</span>
   </div>
   {% if current_user.role == 'lecturer' %}
   <div id="raised-hands-panel" class="raised-hands-panel" style="display:none;">
     <div class="raised-hands-title">🖐 Students waiting to ask a question</div>
     <div id="raised-hands-list"></div>
+  </div>
+  <div id="screen-requests-panel" class="raised-hands-panel" style="display:none;">
+    <div class="raised-hands-title">🖥 Screen share requests</div>
+    <div id="screen-requests-list"></div>
   </div>
   {% endif %}
   <div id="video-grid" class="video-grid">
@@ -63,6 +72,21 @@ const CC_USER_NAME  = {{ current_user.full_name | tojson }};
     📍 Stay on this page — your lecturer marks you present from here.
   </div>
   {% endif %}
+
+  <!-- Live chat -->
+  <div class="chat-panel">
+    <div class="chat-panel-title">💬 Session chat</div>
+    <div id="chat-messages" class="chat-messages"></div>
+    <div class="chat-emoji-row">
+      {% for e in ['👍','🎉','❓','😂','👏','❤️'] %}
+      <button type="button" class="emoji-quick-btn">{{ e }}</button>
+      {% endfor %}
+    </div>
+    <div class="chat-input-row">
+      <input type="text" id="chat-input" class="form-input" placeholder="Ask a question or say something…" maxlength="1000">
+      <button type="button" id="chat-send-btn" class="btn btn-primary btn-sm">Send</button>
+    </div>
+  </div>
 </div>
 {% endif %}
 

@@ -87,7 +87,7 @@ app.config['MAIL_DEFAULT_SENDER'] = (MAIL_SENDER_NAME, app.config['MAIL_USERNAME
 app.config['BREVO_API_KEY']      = os.environ.get('BREVO_API_KEY', '')
 app.config['BREVO_SENDER_EMAIL'] = os.environ.get('BREVO_SENDER_EMAIL', app.config['MAIL_USERNAME'])
 
-ALLOWED_EXTENSIONS = {'pdf', 'doc', 'docx', 'ppt', 'pptx'}
+ALLOWED_EXTENSIONS = {'pdf', 'doc', 'docx', 'ppt', 'pptx', 'webm', 'mp4', 'mp3', 'wav', 'ogg'}
 OTP_EXPIRY_MINUTES = 10
 RESET_TOKEN_EXPIRY_MINUTES = 30
 
@@ -170,6 +170,7 @@ class Course(db.Model):
     enrolments = db.relationship('Enrolment',      backref='course', lazy=True, cascade='all, delete-orphan')
     sessions   = db.relationship('ClassSession',   backref='course', lazy=True, cascade='all, delete-orphan')
     materials  = db.relationship('CourseMaterial', backref='course', lazy=True, cascade='all, delete-orphan')
+    links      = db.relationship('CourseLink',     backref='course', lazy=True, cascade='all, delete-orphan')
 
 
 class Enrolment(db.Model):
@@ -226,6 +227,17 @@ class CourseMaterial(db.Model):
     stored_filename  = db.Column(db.String(255), nullable=False)
     upload_date      = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     uploader         = db.relationship('User', foreign_keys=[uploader_id])
+
+
+class CourseLink(db.Model):
+    __tablename__ = 'course_links'
+    id           = db.Column(db.Integer, primary_key=True)
+    course_id    = db.Column(db.Integer, db.ForeignKey('courses.id'), nullable=False)
+    added_by_id  = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    title        = db.Column(db.String(200), nullable=False)
+    url          = db.Column(db.String(500), nullable=False)
+    created_at   = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    added_by     = db.relationship('User', foreign_keys=[added_by_id])
 
 
 @login_manager.user_loader
@@ -634,13 +646,14 @@ def view_course(course_id):
 
     sessions  = ClassSession.query.filter_by(course_id=course.id).order_by(ClassSession.started_at.desc()).all()
     materials = CourseMaterial.query.filter_by(course_id=course.id).order_by(CourseMaterial.upload_date.desc()).all()
+    links     = CourseLink.query.filter_by(course_id=course.id).order_by(CourseLink.created_at.desc()).all()
     my_attendance = None
     if current_user.role == 'student':
         my_attendance = (AttendanceRecord.query.join(ClassSession)
                          .filter(ClassSession.course_id == course.id,
                                  AttendanceRecord.student_id == current_user.id).count())
     return render_template('course_detail.html', course=course, sessions=sessions,
-                           materials=materials, my_attendance=my_attendance)
+                           materials=materials, links=links, my_attendance=my_attendance)
 
 
 @app.route('/courses/<int:course_id>/delete', methods=['POST'])
@@ -654,7 +667,7 @@ def delete_course(course_id):
     # Collect uploaded material file paths before the DB rows (and their
     # cascade) are gone, so we can also clean up the actual files on disk.
     stored_filenames = [m.stored_filename for m in course.materials]
-    db.session.delete(course)  # cascades to enrolments, sessions, materials (see model relationships)
+    db.session.delete(course)  # cascades to enrolments, sessions, materials, links (see model relationships)
     db.session.commit()
     for fname in stored_filenames:
         try:
@@ -877,6 +890,61 @@ def download_material(material_id):
                                as_attachment=True, download_name=material.filename)
 
 
+@app.route('/materials/<int:material_id>/delete', methods=['POST'])
+@login_required
+@role_required('lecturer')
+def delete_material(material_id):
+    material = db.get_or_404(CourseMaterial, material_id)
+    if material.course.lecturer_id != current_user.id:
+        abort(403)
+    course_id = material.course_id
+    stored_filename = material.stored_filename
+    db.session.delete(material)
+    db.session.commit()
+    try:
+        path = os.path.join(app.config['UPLOAD_FOLDER'], stored_filename)
+        if os.path.isfile(path):
+            os.remove(path)
+    except Exception as e:
+        print(f'[DELETE_MATERIAL] Could not remove file {stored_filename}: {e}')
+    flash('Material deleted.', 'success')
+    return redirect(url_for('view_course', course_id=course_id))
+
+
+@app.route('/courses/<int:course_id>/links/add', methods=['POST'])
+@login_required
+@role_required('lecturer')
+def add_course_link(course_id):
+    course = db.get_or_404(Course, course_id)
+    if course.lecturer_id != current_user.id:
+        abort(403)
+    title = request.form.get('title', '').strip()
+    url_  = request.form.get('url', '').strip()
+    if not title or not url_:
+        flash('A title and a URL are required.', 'danger')
+        return redirect(url_for('view_course', course_id=course.id))
+    if not (url_.startswith('http://') or url_.startswith('https://')):
+        url_ = 'https://' + url_
+    db.session.add(CourseLink(course_id=course.id, added_by_id=current_user.id, title=title, url=url_))
+    db.session.commit()
+    flash('Link added.', 'success')
+    return redirect(url_for('view_course', course_id=course.id))
+
+
+@app.route('/links/<int:link_id>/delete', methods=['POST'])
+@login_required
+@role_required('lecturer')
+def delete_course_link(link_id):
+    link = db.get_or_404(CourseLink, link_id)
+    if link.course.lecturer_id != current_user.id:
+        abort(403)
+    course_id = link.course_id
+    db.session.delete(link)
+    db.session.commit()
+    flash('Link removed.', 'success')
+    return redirect(url_for('view_course', course_id=course_id))
+
+
 # ── Admin ─────────────────────────────────────────────────────────────────────
 
 @app.route('/admin/users/<int:user_id>/delete', methods=['POST'])
@@ -981,6 +1049,82 @@ def on_force_unmute(data):
         return
     room = f"session_{data['session_id']}"
     emit('force-unmute', {'user_id': data['target_user_id']}, to=room, skip_sid=request.sid)
+
+
+# ── Live chat ────────────────────────────────────────────────────────────────
+
+@socketio.on('chat-message')
+def on_chat_message(data):
+    """Real-time chat for the session — not persisted to the database, this
+    is a live discussion channel only (messages don't survive a page
+    reload). Broadcast to everyone in the room, including the sender, so
+    every client renders from a single authoritative source."""
+    if not current_user.is_authenticated:
+        return
+    room = f"session_{data['session_id']}"
+    text = (data.get('text') or '').strip()[:1000]  # hard cap, avoid abuse
+    if not text:
+        return
+    emit('chat-message', {
+        'user_id': current_user.id,
+        'user_name': current_user.full_name,
+        'role': current_user.role,
+        'text': text,
+        'ts': datetime.now(timezone.utc).strftime('%H:%M'),
+    }, to=room)
+
+
+# ── Student screen-share approval ───────────────────────────────────────────
+
+@socketio.on('request-screen-share')
+def on_request_screen_share(data):
+    """A student asks to share their screen. Relayed to the lecturer only
+    (broadcast to the room; every non-lecturer client's listener just
+    ignores it — simplest way to reach 'the lecturer' without tracking
+    individual socket IDs per role)."""
+    if not current_user.is_authenticated or current_user.role != 'student':
+        return
+    room = f"session_{data['session_id']}"
+    emit('screen-share-requested', {
+        'user_id': current_user.id, 'user_name': current_user.full_name
+    }, to=room, skip_sid=request.sid)
+
+
+@socketio.on('respond-screen-share')
+def on_respond_screen_share(data):
+    """Lecturer approves or denies a student's screen-share request.
+    Lecturer-only. On approval, also sets that student as the spotlight —
+    the whole point of asking was to be seen presenting something."""
+    if not current_user.is_authenticated or current_user.role != 'lecturer':
+        return
+    room = f"session_{data['session_id']}"
+    approved = bool(data.get('approved'))
+    target_id = data['target_user_id']
+    emit('screen-share-response', {'approved': approved, 'user_id': target_id}, to=room)
+    if approved:
+        emit('spotlight-changed', {'user_id': target_id}, to=room)
+
+
+@socketio.on('student-screen-share-ended')
+def on_student_screen_share_ended(data):
+    """A student's screen share ended (they stopped it, or the browser's
+    native 'stop sharing' control fired). Clears the spotlight for
+    everyone automatically — 'remove them from spotlight when they're
+    done', without requiring the lecturer to do it manually."""
+    if not current_user.is_authenticated:
+        return
+    room = f"session_{data['session_id']}"
+    emit('spotlight-changed', {'user_id': None}, to=room)
+
+
+@socketio.on('revoke-screen-share')
+def on_revoke_screen_share(data):
+    """Lecturer manually ends a student's screen share early. Lecturer-only."""
+    if not current_user.is_authenticated or current_user.role != 'lecturer':
+        return
+    room = f"session_{data['session_id']}"
+    emit('screen-share-revoked', {'user_id': data['target_user_id']}, to=room)
+    emit('spotlight-changed', {'user_id': None}, to=room)
 
 
 # ── Error handlers ────────────────────────────────────────────────────────────

@@ -116,6 +116,8 @@
       <div style="font-size:1.5rem;">
         {% if m.filename.endswith('.pdf') %}📕
         {% elif m.filename.endswith(('.doc','.docx')) %}📘
+        {% elif m.filename.endswith(('.webm','.mp4')) %}🎬
+        {% elif m.filename.endswith(('.mp3','.wav','.ogg')) %}🎧
         {% else %}📊{% endif %}
       </div>
       <div style="flex:1;min-width:0;">
@@ -123,11 +125,51 @@
         <div class="text-muted" style="font-size:.75rem;">{{ m.filename }} · {{ m.upload_date.strftime('%d %b %Y') }}</div>
       </div>
       <a href="{{ url_for('download_material', material_id=m.id) }}" class="btn btn-sm btn-primary">⬇ Download</a>
+      {% if current_user.role == 'lecturer' %}
+      <form method="POST" action="{{ url_for('delete_material', material_id=m.id) }}" class="inline-form"
+            onsubmit="return confirm('Delete &quot;{{ m.title }}&quot;? This cannot be undone.');">
+        <button class="btn btn-sm btn-secondary" title="Delete material">🗑</button>
+      </form>
+      {% endif %}
     </div>
     {% endfor %}
   </div>
   {% else %}
   <div class="text-muted text-center" style="padding:1.5rem;">No materials uploaded yet.</div>
+  {% endif %}
+</div>
+
+<!-- Related links -->
+<div class="card animate-up">
+  <div class="card-header">
+    <div class="card-title">🔗 Related Links</div>
+    <span class="text-muted">{{ links|length }} link(s)</span>
+  </div>
+  {% if current_user.role == 'lecturer' %}
+  <form method="POST" action="{{ url_for('add_course_link', course_id=course.id) }}" class="form-row" style="margin-bottom:1rem;">
+    <input type="text" name="title" class="form-input" placeholder="Link title (e.g. YouTube: Intro to Compilers)" required>
+    <input type="url" name="url" class="form-input" placeholder="https://youtube.com/..." required>
+    <button type="submit" class="btn btn-secondary btn-sm">➕ Add</button>
+  </form>
+  {% endif %}
+  {% if links %}
+  <div style="display:flex;flex-direction:column;gap:.5rem;">
+    {% for link in links %}
+    <div style="display:flex;align-items:center;gap:.75rem;padding:.6rem .75rem;border:1px solid var(--slate-200);border-radius:8px;">
+      <a href="{{ link.url }}" target="_blank" rel="noopener noreferrer" style="flex:1;min-width:0;font-weight:600;font-size:.875rem;color:var(--blue-600);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+        🔗 {{ link.title }}
+      </a>
+      {% if current_user.role == 'lecturer' %}
+      <form method="POST" action="{{ url_for('delete_course_link', link_id=link.id) }}" class="inline-form"
+            onsubmit="return confirm('Remove this link?');">
+        <button class="btn btn-sm btn-secondary" title="Remove link">🗑</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="text-muted text-center" style="padding:1rem;">No related links added yet.</div>
   {% endif %}
 </div>
 

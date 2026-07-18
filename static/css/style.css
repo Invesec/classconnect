@@ -528,6 +528,44 @@ tr:hover td { background: var(--slate-50); }
   box-shadow: 0 0 0 3px rgba(59,130,246,.25), 0 12px 32px -10px rgba(0,0,0,.6);
   order: -1;
 }
+.video-tile-mute-btn {
+  position: absolute; top: .4rem; left: .4rem; z-index: 2;
+  background: rgba(220,38,38,.75); color: white; border: none; border-radius: 6px;
+  width: 28px; height: 28px; font-size: .85rem; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity .2s, background .2s;
+}
+.video-tile:hover .video-tile-mute-btn,
+.video-tile:focus-within .video-tile-mute-btn { opacity: 1; }
+.video-tile-mute-btn:hover { background: rgba(220,38,38,.95); }
+@media (hover: none) { .video-tile-mute-btn { opacity: .85; } }
+
+/* ── Live chat ────────────────────────────────────────────────────────────── */
+.chat-panel {
+  margin-top: 1rem; background: var(--slate-50); border: 1px solid var(--slate-200);
+  border-radius: var(--radius); padding: 1rem; display: flex; flex-direction: column;
+}
+.chat-panel-title { font-weight: 700; font-size: .85rem; color: var(--slate-700); margin-bottom: .6rem; }
+.chat-messages {
+  max-height: 260px; min-height: 100px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: .5rem; margin-bottom: .6rem;
+  padding-right: .25rem;
+}
+.chat-msg {
+  background: white; border: 1px solid var(--slate-200); border-radius: 10px;
+  padding: .5rem .7rem; max-width: 85%; align-self: flex-start;
+}
+.chat-msg-own { align-self: flex-end; background: var(--blue-50); border-color: var(--blue-200, #bfdbfe); }
+.chat-msg-meta { font-size: .7rem; color: var(--slate-500); margin-bottom: .15rem; font-weight: 600; }
+.chat-msg-text { font-size: .875rem; color: var(--slate-800); white-space: pre-wrap; word-break: break-word; }
+.chat-emoji-row { display: flex; gap: .35rem; margin-bottom: .5rem; }
+.emoji-quick-btn {
+  background: white; border: 1px solid var(--slate-200); border-radius: 8px;
+  padding: .3rem .5rem; font-size: 1rem; cursor: pointer; transition: background .15s, transform .15s;
+}
+.emoji-quick-btn:hover { background: var(--slate-100); transform: translateY(-1px); }
+.chat-input-row { display: flex; gap: .5rem; }
+.chat-input-row .form-input { flex: 1; }
 .video-label {
   position: absolute; bottom: 0; left: 0; right: 0;
   background: linear-gradient(transparent, rgba(0,0,0,.7));
