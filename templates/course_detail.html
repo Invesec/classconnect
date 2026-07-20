@@ -23,7 +23,58 @@
     <span id="copy-toast" style="display:none;color:var(--green-600);font-size:.82rem;font-weight:600;">Copied!</span>
   </div>
   <div class="text-muted mt-1">{{ course.enrolments|length }} student(s) enrolled</div>
+
+  <div class="mt-2" style="padding-top:.85rem;border-top:1px solid rgba(59,130,246,.2);">
+    <div style="font-size:.8rem;font-weight:600;color:var(--slate-700);margin-bottom:.35rem;">⚡ Fast join link (skip typing the code)</div>
+    <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+      <input type="text" readonly value="{{ request.url_root }}join/{{ course.enrolment_code }}"
+             id="join-link" class="form-input" style="max-width:340px;font-size:.8rem;" onclick="this.select();">
+      <button class="btn btn-secondary btn-sm" onclick="copyJoinLink()">📋 Copy link</button>
+      <span id="join-link-toast" style="display:none;color:var(--green-600);font-size:.82rem;font-weight:600;">Copied!</span>
+    </div>
+  </div>
+
+  <div class="mt-2" style="padding-top:.85rem;border-top:1px solid rgba(59,130,246,.2);">
+    <div style="font-size:.8rem;font-weight:600;color:var(--slate-700);margin-bottom:.35rem;">📊 Download attendance register</div>
+    <div style="display:flex;gap:.5rem;">
+      <a href="{{ url_for('export_attendance', course_id=course.id, fmt='pdf') }}" class="btn btn-secondary btn-sm">📕 PDF</a>
+      <a href="{{ url_for('export_attendance', course_id=course.id, fmt='docx') }}" class="btn btn-secondary btn-sm">📘 Word (.docx)</a>
+    </div>
+  </div>
 </div>
+
+{% if is_owner %}
+<!-- Co-lecturers -->
+<div class="card animate-up">
+  <div class="card-header">
+    <div class="card-title">🤝 Co-Lecturers</div>
+    <span class="text-muted">{{ co_lecturers|length }} invited</span>
+  </div>
+  <div style="font-size:.8rem;font-weight:600;color:var(--slate-700);margin-bottom:.35rem;">Invite link — another lecturer who opens this gets full lecturer access to this course</div>
+  <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem;">
+    <input type="text" readonly value="{{ request.url_root }}courses/join-as-lecturer/{{ lecturer_invite_code }}"
+           id="colect-link" class="form-input" style="max-width:400px;font-size:.8rem;" onclick="this.select();">
+    <button class="btn btn-secondary btn-sm" onclick="copyColectLink()">📋 Copy link</button>
+    <span id="colect-link-toast" style="display:none;color:var(--green-600);font-size:.82rem;font-weight:600;">Copied!</span>
+  </div>
+  {% if co_lecturers %}
+  <div style="display:flex;flex-direction:column;gap:.5rem;">
+    {% for cl in co_lecturers %}
+    <div style="display:flex;align-items:center;gap:.75rem;padding:.5rem .75rem;border:1px solid var(--slate-200);border-radius:8px;">
+      <span style="flex:1;font-weight:600;font-size:.875rem;">{{ cl.lecturer.full_name }}</span>
+      <span class="text-muted" style="font-size:.78rem;">since {{ cl.invited_at.strftime('%d %b %Y') }}</span>
+      <form method="POST" action="{{ url_for('remove_co_lecturer', course_id=course.id, colecturer_id=cl.id) }}" class="inline-form"
+            onsubmit="return confirm('Remove {{ cl.lecturer.full_name }}\'s access to this course?');">
+        <button class="btn btn-sm btn-secondary">Remove</button>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="text-muted" style="font-size:.85rem;">No co-lecturers yet.</div>
+  {% endif %}
+</div>
+{% endif %}
 
 <!-- Start session -->
 <div class="card animate-up">
@@ -173,8 +224,51 @@
   {% endif %}
 </div>
 
+<!-- Assignments -->
+<div class="card animate-up">
+  <div class="card-header">
+    <div class="card-title">📝 Assignments</div>
+    <span class="text-muted">{{ assignments|length }} posted</span>
+  </div>
+  {% if current_user.role == 'lecturer' %}
+  <form method="POST" action="{{ url_for('create_assignment', course_id=course.id) }}" style="margin-bottom:1.25rem;">
+    <div class="form-group">
+      <label class="form-label">Title</label>
+      <input type="text" name="title" class="form-input" placeholder="e.g. Assignment 1: Lexical Analysis" required>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Instructions</label>
+      <textarea name="instructions" class="form-textarea" placeholder="What should students do? Any format notes, page limits, etc."></textarea>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Due date (optional)</label>
+      <input type="datetime-local" name="due_date" class="form-input" style="max-width:260px;">
+    </div>
+    <button type="submit" class="btn btn-secondary btn-sm">➕ Post Assignment</button>
+  </form>
+  {% endif %}
+  {% if assignments %}
+  <div style="display:flex;flex-direction:column;gap:.5rem;">
+    {% for a in assignments %}
+    <a href="{{ url_for('view_assignment', assignment_id=a.id) }}" style="display:flex;align-items:center;gap:.75rem;padding:.7rem .9rem;border:1px solid var(--slate-200);border-radius:8px;text-decoration:none;color:inherit;transition:border-color .2s;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;font-size:.9rem;">{{ a.title }}</div>
+        <div class="text-muted" style="font-size:.78rem;">
+          Posted {{ a.created_at.strftime('%d %b %Y') }}
+          {% if a.due_date %} · Due {{ a.due_date.strftime('%d %b %Y, %H:%M') }}{% endif %}
+          {% if current_user.role == 'lecturer' %} · {{ a.submissions|length }} submission(s){% endif %}
+        </div>
+      </div>
+      <span style="color:var(--blue-600);font-weight:600;font-size:.8rem;">View →</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="text-muted text-center" style="padding:1rem;">No assignments posted yet.</div>
+  {% endif %}
+</div>
+
 {% if current_user.role == 'lecturer' %}
-<!-- Danger zone -->
 <div class="card animate-up" style="border-color:#fca5a5;background:#fff5f5;">
   <div class="card-header">
     <div class="card-title" style="color:var(--red-600);">⚠ Danger Zone</div>
@@ -208,6 +302,22 @@
 function copyCode() {
   navigator.clipboard.writeText('{{ course.enrolment_code }}').then(() => {
     const t = document.getElementById('copy-toast');
+    t.style.display = 'inline';
+    setTimeout(() => t.style.display = 'none', 2000);
+  });
+}
+function copyJoinLink() {
+  const input = document.getElementById('join-link');
+  navigator.clipboard.writeText(input.value).then(() => {
+    const t = document.getElementById('join-link-toast');
+    t.style.display = 'inline';
+    setTimeout(() => t.style.display = 'none', 2000);
+  });
+}
+function copyColectLink() {
+  const input = document.getElementById('colect-link');
+  navigator.clipboard.writeText(input.value).then(() => {
+    const t = document.getElementById('colect-link-toast');
     t.style.display = 'inline';
     setTimeout(() => t.style.display = 'none', 2000);
   });

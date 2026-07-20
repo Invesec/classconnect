@@ -1,0 +1,112 @@
+{% extends 'base.html' %}
+{% block title %}{{ assignment.title }} – ClassConnect{% endblock %}
+{% block content %}
+
+<div class="page-header animate-fade">
+  <div>
+    <div style="font-size:.8rem;font-weight:700;color:var(--blue-600);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.2rem;">
+      {{ course.course_code }}
+    </div>
+    <div class="page-title">{{ assignment.title }}</div>
+    <div class="page-subtitle">
+      Posted {{ assignment.created_at.strftime('%d %b %Y') }}
+      {% if assignment.due_date %} · Due {{ assignment.due_date.strftime('%d %b %Y, %H:%M') }}{% endif %}
+    </div>
+  </div>
+  <a href="{{ url_for('view_course', course_id=course.id) }}" class="btn btn-secondary">← Back to Course</a>
+</div>
+
+{% if assignment.instructions %}
+<div class="card animate-up">
+  <div class="card-title" style="margin-bottom:.6rem;">📋 Instructions</div>
+  <p style="white-space:pre-wrap;color:var(--slate-700);font-size:.9rem;line-height:1.7;">{{ assignment.instructions }}</p>
+</div>
+{% endif %}
+
+{% if current_user.role == 'student' %}
+<!-- Student view: submission status + upload form -->
+<div class="card animate-up">
+  <div class="card-title" style="margin-bottom:.85rem;">📤 Your Submission</div>
+
+  {% if my_submission %}
+  <div style="display:flex;align-items:center;gap:1rem;padding:.85rem;border:1px solid var(--green-100);background:var(--green-100);border-radius:8px;margin-bottom:1rem;">
+    <div style="font-size:1.5rem;">✅</div>
+    <div style="flex:1;">
+      <div style="font-weight:600;font-size:.9rem;color:#166534;">Submitted: {{ my_submission.filename }}</div>
+      <div class="text-muted" style="font-size:.78rem;">
+        {{ my_submission.submitted_at.strftime('%d %b %Y, %H:%M') }}
+        {% if assignment.due_date and my_submission.submitted_at > assignment.due_date %}
+        · <span style="color:var(--red-600);font-weight:600;">Submitted late</span>
+        {% endif %}
+      </div>
+    </div>
+    <a href="{{ url_for('download_submission', submission_id=my_submission.id) }}" class="btn btn-sm btn-secondary">⬇ Download</a>
+  </div>
+  <p class="text-muted" style="font-size:.82rem;margin-bottom:.75rem;">Submitting again will replace your current submission.</p>
+  {% endif %}
+
+  <form method="POST" action="{{ url_for('submit_assignment', assignment_id=assignment.id) }}" enctype="multipart/form-data">
+    <div class="file-drop" onclick="document.getElementById('real-file-input').click();">
+      <div class="file-drop-icon">📎</div>
+      <p><strong>Click to choose a file</strong> — any format accepted</p>
+      <div id="file-name" class="file-selected"></div>
+    </div>
+    <input type="file" id="real-file-input" name="file" onchange="showFileName(this)">
+    <button type="submit" class="btn btn-primary mt-2">
+      {{ 'Resubmit' if my_submission else 'Submit Assignment' }}
+    </button>
+  </form>
+</div>
+
+{% else %}
+<!-- Lecturer view: submissions list, clearly identifying each student -->
+<div class="card animate-up">
+  <div class="card-header">
+    <div class="card-title">📥 Submissions</div>
+    <span class="text-muted">{{ submissions|length }} student(s) submitted</span>
+  </div>
+  {% if submissions %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Student</th><th>Matric No.</th><th>File</th><th>Submitted</th><th></th></tr></thead>
+      <tbody>
+        {% for s in submissions %}
+        <tr>
+          <td style="font-weight:600;">{{ s.student.full_name }}</td>
+          <td class="text-muted" style="font-size:.8rem;">{{ s.student.id_number or '—' }}</td>
+          <td class="text-muted" style="font-size:.8rem;">{{ s.filename }}</td>
+          <td class="text-muted" style="font-size:.8rem;">
+            {{ s.submitted_at.strftime('%d %b %Y, %H:%M') }}
+            {% if assignment.due_date and s.submitted_at > assignment.due_date %}
+            <span class="badge badge-absent" style="margin-left:.35rem;">Late</span>
+            {% endif %}
+          </td>
+          <td><a href="{{ url_for('download_submission', submission_id=s.id) }}" class="btn btn-sm btn-primary">⬇ Download</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="table-empty">No submissions yet.</div>
+  {% endif %}
+</div>
+
+<div class="card animate-up" style="border-color:#fca5a5;background:#fff5f5;">
+  <div class="card-title" style="color:var(--red-600);margin-bottom:.6rem;">⚠ Delete Assignment</div>
+  <p class="text-muted" style="margin-bottom:.75rem;">This removes the assignment and every student's submission. This cannot be undone.</p>
+  <form method="POST" action="{{ url_for('delete_assignment', assignment_id=assignment.id) }}"
+        onsubmit="return confirm('Delete this assignment and all submissions? This cannot be undone.');">
+    <button type="submit" class="btn btn-danger">🗑 Delete Assignment</button>
+  </form>
+</div>
+{% endif %}
+
+<script>
+function showFileName(input) {
+  const name = input.files[0]?.name || '';
+  const el = document.getElementById('file-name');
+  if (el) el.textContent = name ? '✅ ' + name : '';
+}
+</script>
+{% endblock %}

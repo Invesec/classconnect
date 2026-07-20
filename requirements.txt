@@ -9,6 +9,9 @@ requests==2.32.3
 # Postgres driver — required when DATABASE_URL points at a real Postgres
 # database (e.g. Neon's free tier) instead of the local SQLite fallback.
 psycopg2-binary==2.9.9
+# PDF and Word document generation for attendance export
+reportlab==4.2.5
+python-docx==1.1.2
 # Required in production: Render's Start Command runs
 # `gunicorn --worker-class eventlet -w 1 app:app`, so both of these must be
 # actual installed dependencies, not commented out — without them the build

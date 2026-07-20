@@ -21,7 +21,7 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 from flask import (Flask, render_template, redirect, url_for, flash,
-                   request, abort, send_from_directory, jsonify)
+                   request, abort, send_from_directory, jsonify, session)
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import (LoginManager, UserMixin, login_user, logout_user,
                          login_required, current_user)
@@ -29,6 +29,14 @@ from flask_mail import Mail, Message
 from flask_socketio import SocketIO, join_room, leave_room, emit
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
+from io import BytesIO
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.units import cm
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from docx import Document as DocxDocument
+from docx.shared import Pt, Inches
 
 basedir = os.path.abspath(os.path.dirname(__file__))
 
@@ -159,18 +167,62 @@ class User(UserMixin, db.Model):
 
 class Course(db.Model):
     __tablename__ = 'courses'
-    id              = db.Column(db.Integer, primary_key=True)
-    course_code     = db.Column(db.String(20), nullable=False)
-    title           = db.Column(db.String(150), nullable=False)
-    description     = db.Column(db.Text)
-    enrolment_code  = db.Column(db.String(10), unique=True, nullable=False)
-    lecturer_id     = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    created_at      = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    id                    = db.Column(db.Integer, primary_key=True)
+    course_code           = db.Column(db.String(20), nullable=False)
+    title                 = db.Column(db.String(150), nullable=False)
+    description           = db.Column(db.Text)
+    enrolment_code        = db.Column(db.String(10), unique=True, nullable=False)
+    lecturer_invite_code  = db.Column(db.String(10), unique=True)
+    lecturer_id           = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    created_at            = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
-    enrolments = db.relationship('Enrolment',      backref='course', lazy=True, cascade='all, delete-orphan')
-    sessions   = db.relationship('ClassSession',   backref='course', lazy=True, cascade='all, delete-orphan')
-    materials  = db.relationship('CourseMaterial', backref='course', lazy=True, cascade='all, delete-orphan')
-    links      = db.relationship('CourseLink',     backref='course', lazy=True, cascade='all, delete-orphan')
+    enrolments   = db.relationship('Enrolment',        backref='course', lazy=True, cascade='all, delete-orphan')
+    sessions     = db.relationship('ClassSession',      backref='course', lazy=True, cascade='all, delete-orphan')
+    materials    = db.relationship('CourseMaterial',    backref='course', lazy=True, cascade='all, delete-orphan')
+    links        = db.relationship('CourseLink',        backref='course', lazy=True, cascade='all, delete-orphan')
+    co_lecturers = db.relationship('CourseCoLecturer',  backref='course', lazy=True, cascade='all, delete-orphan')
+    assignments  = db.relationship('Assignment',        backref='course', lazy=True, cascade='all, delete-orphan')
+
+
+class CourseCoLecturer(db.Model):
+    """A lecturer other than the course owner who has been granted full
+    lecturer access to this course (view/manage materials, run sessions,
+    moderate live classes, create assignments) — everything except
+    deleting the course itself, which stays with the original owner."""
+    __tablename__ = 'course_co_lecturers'
+    id           = db.Column(db.Integer, primary_key=True)
+    course_id    = db.Column(db.Integer, db.ForeignKey('courses.id'), nullable=False)
+    lecturer_id  = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    invited_at   = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    lecturer     = db.relationship('User', foreign_keys=[lecturer_id])
+
+    __table_args__ = (db.UniqueConstraint('course_id', 'lecturer_id', name='uq_course_colecturer'),)
+
+
+class Assignment(db.Model):
+    __tablename__ = 'assignments'
+    id           = db.Column(db.Integer, primary_key=True)
+    course_id    = db.Column(db.Integer, db.ForeignKey('courses.id'), nullable=False)
+    created_by   = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    title        = db.Column(db.String(200), nullable=False)
+    instructions = db.Column(db.Text)
+    due_date     = db.Column(db.DateTime)
+    created_at   = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    submissions = db.relationship('AssignmentSubmission', backref='assignment', lazy=True, cascade='all, delete-orphan')
+
+
+class AssignmentSubmission(db.Model):
+    __tablename__ = 'assignment_submissions'
+    id               = db.Column(db.Integer, primary_key=True)
+    assignment_id    = db.Column(db.Integer, db.ForeignKey('assignments.id'), nullable=False)
+    student_id       = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    filename         = db.Column(db.String(255), nullable=False)
+    stored_filename  = db.Column(db.String(255), nullable=False)
+    submitted_at     = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    student          = db.relationship('User', foreign_keys=[student_id])
+
+    __table_args__ = (db.UniqueConstraint('assignment_id', 'student_id', name='uq_one_submission_per_student'),)
 
 
 class Enrolment(db.Model):
@@ -253,23 +305,30 @@ def ensure_schema_upgrades():
     different type names for the same concept (e.g. DATETIME vs TIMESTAMP)."""
     from sqlalchemy import text, inspect
     inspector = inspect(db.engine)
-    if 'users' not in inspector.get_table_names():
-        return  # fresh database — db.create_all() will create it with all columns
-    existing_cols = {c['name'] for c in inspector.get_columns('users')}
     is_postgres = db.engine.dialect.name == 'postgresql'
-    needed = {
-        'reset_token': 'VARCHAR(64)',
-        'reset_token_expires': 'TIMESTAMP' if is_postgres else 'DATETIME',
+    tables_needed = {
+        'users': {
+            'reset_token': 'VARCHAR(64)',
+            'reset_token_expires': 'TIMESTAMP' if is_postgres else 'DATETIME',
+        },
+        'courses': {
+            'lecturer_invite_code': 'VARCHAR(10)',
+        },
     }
-    for col_name, col_type in needed.items():
-        if col_name not in existing_cols:
-            try:
-                db.session.execute(text(f'ALTER TABLE users ADD COLUMN {col_name} {col_type}'))
-                db.session.commit()
-                print(f'[MIGRATION] Added missing column users.{col_name}')
-            except Exception as e:
-                db.session.rollback()
-                print(f'[MIGRATION ERROR] Could not add column {col_name}: {e}')
+    existing_tables = set(inspector.get_table_names())
+    for table_name, needed in tables_needed.items():
+        if table_name not in existing_tables:
+            continue  # fresh database — db.create_all() will create it with all columns
+        existing_cols = {c['name'] for c in inspector.get_columns(table_name)}
+        for col_name, col_type in needed.items():
+            if col_name not in existing_cols:
+                try:
+                    db.session.execute(text(f'ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}'))
+                    db.session.commit()
+                    print(f'[MIGRATION] Added missing column {table_name}.{col_name}')
+                except Exception as e:
+                    db.session.rollback()
+                    print(f'[MIGRATION ERROR] Could not add column {col_name} to {table_name}: {e}')
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -278,12 +337,50 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+BLOCKED_SUBMISSION_EXTENSIONS = {'exe', 'sh', 'bat', 'cmd', 'msi', 'dll', 'com', 'scr', 'php', 'js', 'py', 'jar', 'apk'}
+
+def allowed_submission_file(filename):
+    """Assignment submissions can be 'any format' per course requirements —
+    but still block obviously dangerous executable/script types rather
+    than accepting literally anything."""
+    if '.' not in filename:
+        return False
+    ext = filename.rsplit('.', 1)[1].lower()
+    return ext not in BLOCKED_SUBMISSION_EXTENSIONS
+
+
 def generate_enrolment_code(length=6):
     chars = string.ascii_uppercase + string.digits
     while True:
         code = ''.join(secrets.choice(chars) for _ in range(length))
         if not Course.query.filter_by(enrolment_code=code).first():
             return code
+
+
+def generate_lecturer_invite_code(length=8):
+    chars = string.ascii_uppercase + string.digits
+    while True:
+        code = ''.join(secrets.choice(chars) for _ in range(length))
+        if not Course.query.filter_by(lecturer_invite_code=code).first():
+            return code
+
+
+def is_course_lecturer(course, user):
+    """True if user is the course's original owner OR a co-lecturer who
+    was invited in. Use this everywhere a route currently only checks
+    course.lecturer_id == current_user.id, so co-lecturers get the same
+    access as the owner (except deleting the course, which stays
+    owner-only — see delete_course)."""
+    if course.lecturer_id == user.id:
+        return True
+    return CourseCoLecturer.query.filter_by(course_id=course.id, lecturer_id=user.id).first() is not None
+
+
+def get_or_create_lecturer_invite_code(course):
+    if not course.lecturer_invite_code:
+        course.lecturer_invite_code = generate_lecturer_invite_code()
+        db.session.commit()
+    return course.lecturer_invite_code
 
 
 def _send_via_brevo(subject, to_email, html, text):
@@ -537,9 +634,35 @@ def login():
                 flash('Please verify your email first. Check your inbox for the OTP.', 'danger')
                 return redirect(url_for('verify_otp', user_id=user.id))
             login_user(user)
-            return redirect(url_for('dashboard'))
+            redirect_target = _complete_pending_join()
+            return redirect(redirect_target or url_for('dashboard'))
         flash('Invalid email or password.', 'danger')
     return render_template('login.html')
+
+
+def _complete_pending_join():
+    """After logging in, if the person arrived via a /join/<code> or
+    /courses/join-as-lecturer/<code> link, finish that action now and
+    return where they should land — or None to fall back to the dashboard."""
+    join_code = session.pop('pending_join_code', None)
+    if join_code and current_user.role == 'student':
+        course = Course.query.filter_by(enrolment_code=join_code).first()
+        if course:
+            already = _enrol_student(course, current_user)
+            flash('You are already enrolled in this course.' if already
+                  else f'Enrolled in {course.course_code} – {course.title}.', 'info' if already else 'success')
+            return url_for('view_course', course_id=course.id)
+
+    colecturer_code = session.pop('pending_colecturer_code', None)
+    if colecturer_code and current_user.role == 'lecturer':
+        course = Course.query.filter_by(lecturer_invite_code=colecturer_code).first()
+        if course and course.lecturer_id != current_user.id:
+            if not CourseCoLecturer.query.filter_by(course_id=course.id, lecturer_id=current_user.id).first():
+                db.session.add(CourseCoLecturer(course_id=course.id, lecturer_id=current_user.id))
+                db.session.commit()
+                flash(f'You now have full lecturer access to "{course.title}".', 'success')
+            return url_for('view_course', course_id=course.id)
+    return None
 
 
 @app.route('/logout')
@@ -638,22 +761,29 @@ def create_course():
 @login_required
 def view_course(course_id):
     course = db.get_or_404(Course, course_id)
-    if current_user.role == 'lecturer' and course.lecturer_id != current_user.id:
+    if current_user.role == 'lecturer' and not is_course_lecturer(course, current_user):
         abort(403)
     if current_user.role == 'student':
         if not Enrolment.query.filter_by(student_id=current_user.id, course_id=course.id).first():
             abort(403)
 
-    sessions  = ClassSession.query.filter_by(course_id=course.id).order_by(ClassSession.started_at.desc()).all()
-    materials = CourseMaterial.query.filter_by(course_id=course.id).order_by(CourseMaterial.upload_date.desc()).all()
-    links     = CourseLink.query.filter_by(course_id=course.id).order_by(CourseLink.created_at.desc()).all()
+    sessions    = ClassSession.query.filter_by(course_id=course.id).order_by(ClassSession.started_at.desc()).all()
+    materials   = CourseMaterial.query.filter_by(course_id=course.id).order_by(CourseMaterial.upload_date.desc()).all()
+    links       = CourseLink.query.filter_by(course_id=course.id).order_by(CourseLink.created_at.desc()).all()
+    assignments = Assignment.query.filter_by(course_id=course.id).order_by(Assignment.created_at.desc()).all()
     my_attendance = None
     if current_user.role == 'student':
         my_attendance = (AttendanceRecord.query.join(ClassSession)
                          .filter(ClassSession.course_id == course.id,
                                  AttendanceRecord.student_id == current_user.id).count())
+    lecturer_invite_code = None
+    if current_user.role == 'lecturer' and course.lecturer_id == current_user.id:
+        lecturer_invite_code = get_or_create_lecturer_invite_code(course)
     return render_template('course_detail.html', course=course, sessions=sessions,
-                           materials=materials, links=links, my_attendance=my_attendance)
+                           materials=materials, links=links, assignments=assignments,
+                           my_attendance=my_attendance, co_lecturers=course.co_lecturers,
+                           lecturer_invite_code=lecturer_invite_code,
+                           is_owner=(course.lecturer_id == current_user.id))
 
 
 @app.route('/courses/<int:course_id>/delete', methods=['POST'])
@@ -667,7 +797,9 @@ def delete_course(course_id):
     # Collect uploaded material file paths before the DB rows (and their
     # cascade) are gone, so we can also clean up the actual files on disk.
     stored_filenames = [m.stored_filename for m in course.materials]
-    db.session.delete(course)  # cascades to enrolments, sessions, materials, links (see model relationships)
+    for a in course.assignments:
+        stored_filenames += [s.stored_filename for s in a.submissions]
+    db.session.delete(course)  # cascades to enrolments, sessions, materials, links, co-lecturers, assignments (see model relationships)
     db.session.commit()
     for fname in stored_filenames:
         try:
@@ -680,6 +812,16 @@ def delete_course(course_id):
     return redirect(url_for('dashboard'))
 
 
+def _enrol_student(course, student):
+    """Shared enrolment logic used by both the manual code-entry form and
+    the fast-join link. Returns (already_enrolled: bool)."""
+    if Enrolment.query.filter_by(student_id=student.id, course_id=course.id).first():
+        return True
+    db.session.add(Enrolment(student_id=student.id, course_id=course.id))
+    db.session.commit()
+    return False
+
+
 @app.route('/courses/enrol', methods=['POST'])
 @login_required
 @role_required('student')
@@ -689,12 +831,73 @@ def enrol_course():
     if not course:
         flash('Invalid enrolment code.', 'danger')
         return redirect(url_for('dashboard'))
-    if Enrolment.query.filter_by(student_id=current_user.id, course_id=course.id).first():
-        flash('You are already enrolled in this course.', 'info')
-    else:
-        db.session.add(Enrolment(student_id=current_user.id, course_id=course.id))
+    already = _enrol_student(course, current_user)
+    flash('You are already enrolled in this course.' if already
+          else f'Enrolled in {course.course_code} – {course.title}.', 'info' if already else 'success')
+    return redirect(url_for('view_course', course_id=course.id))
+
+
+@app.route('/join/<code>')
+def join_via_link(code):
+    """Fast enrolment link — a student can just click a shared link instead
+    of typing the course code manually. If not logged in, sends them to
+    register/login first and comes back here automatically afterward."""
+    course = Course.query.filter_by(enrolment_code=code.strip().upper()).first()
+    if not course:
+        flash('That course link is invalid or has expired.', 'danger')
+        return redirect(url_for('index'))
+    if not current_user.is_authenticated:
+        session['pending_join_code'] = code.strip().upper()
+        flash('Log in or create a student account to join this course.', 'info')
+        return redirect(url_for('login'))
+    if current_user.role != 'student':
+        flash('Only student accounts can join a course this way.', 'danger')
+        return redirect(url_for('dashboard'))
+    already = _enrol_student(course, current_user)
+    flash('You are already enrolled in this course.' if already
+          else f'Enrolled in {course.course_code} – {course.title}.', 'info' if already else 'success')
+    return redirect(url_for('view_course', course_id=course.id))
+
+
+@app.route('/courses/join-as-lecturer/<code>')
+def join_as_lecturer(code):
+    """A different lecturer uses this link to become a co-lecturer on
+    someone else's course, gaining full lecturer access to it (except
+    deleting the course)."""
+    course = Course.query.filter_by(lecturer_invite_code=code.strip().upper()).first()
+    if not course:
+        flash('That invite link is invalid or has expired.', 'danger')
+        return redirect(url_for('index'))
+    if not current_user.is_authenticated:
+        session['pending_colecturer_code'] = code.strip().upper()
+        flash('Log in with your lecturer account to accept this invite.', 'info')
+        return redirect(url_for('login'))
+    if current_user.role != 'lecturer':
+        flash('Only lecturer accounts can accept this invite.', 'danger')
+        return redirect(url_for('dashboard'))
+    if course.lecturer_id == current_user.id:
+        flash('This is already your own course.', 'info')
+        return redirect(url_for('view_course', course_id=course.id))
+    if not CourseCoLecturer.query.filter_by(course_id=course.id, lecturer_id=current_user.id).first():
+        db.session.add(CourseCoLecturer(course_id=course.id, lecturer_id=current_user.id))
         db.session.commit()
-        flash(f'Enrolled in {course.course_code} – {course.title}.', 'success')
+        flash(f'You now have full lecturer access to "{course.title}".', 'success')
+    return redirect(url_for('view_course', course_id=course.id))
+
+
+@app.route('/courses/<int:course_id>/co-lecturers/<int:colecturer_id>/remove', methods=['POST'])
+@login_required
+@role_required('lecturer')
+def remove_co_lecturer(course_id, colecturer_id):
+    course = db.get_or_404(Course, course_id)
+    if course.lecturer_id != current_user.id:  # only the original owner can revoke access
+        abort(403)
+    entry = db.get_or_404(CourseCoLecturer, colecturer_id)
+    if entry.course_id != course.id:
+        abort(404)
+    db.session.delete(entry)
+    db.session.commit()
+    flash('Co-lecturer access removed.', 'success')
     return redirect(url_for('view_course', course_id=course.id))
 
 
@@ -705,7 +908,7 @@ def enrol_course():
 @role_required('lecturer')
 def start_session(course_id):
     course = db.get_or_404(Course, course_id)
-    if course.lecturer_id != current_user.id:
+    if not is_course_lecturer(course, current_user):
         abort(403)
     active = ClassSession.query.filter_by(course_id=course.id, status='active').first()
     if active:
@@ -724,7 +927,7 @@ def session_room(session_id):
     session_obj = db.get_or_404(ClassSession, session_id)
     course      = session_obj.course
 
-    if current_user.role == 'lecturer' and course.lecturer_id != current_user.id:
+    if current_user.role == 'lecturer' and not is_course_lecturer(course, current_user):
         abort(403)
     if current_user.role == 'student':
         if not Enrolment.query.filter_by(student_id=current_user.id, course_id=course.id).first():
@@ -802,7 +1005,7 @@ def session_participants_json(session_id):
 @role_required('lecturer')
 def take_attendance(session_id):
     session_obj = db.get_or_404(ClassSession, session_id)
-    if session_obj.course.lecturer_id != current_user.id:
+    if not is_course_lecturer(session_obj.course, current_user):
         abort(403)
     participants = SessionParticipant.query.filter_by(session_id=session_obj.id,
                                                        still_connected=True).all()
@@ -824,7 +1027,7 @@ def take_attendance(session_id):
 @role_required('lecturer')
 def close_session(session_id):
     session_obj = db.get_or_404(ClassSession, session_id)
-    if session_obj.course.lecturer_id != current_user.id:
+    if not is_course_lecturer(session_obj.course, current_user):
         abort(403)
     session_obj.status    = 'closed'
     session_obj.closed_at = datetime.now(timezone.utc)
@@ -838,7 +1041,7 @@ def close_session(session_id):
 def session_report(session_id):
     session_obj = db.get_or_404(ClassSession, session_id)
     course      = session_obj.course
-    if current_user.role == 'lecturer' and course.lecturer_id != current_user.id:
+    if current_user.role == 'lecturer' and not is_course_lecturer(course, current_user):
         abort(403)
     if current_user.role == 'student':
         if not Enrolment.query.filter_by(student_id=current_user.id, course_id=course.id).first():
@@ -848,6 +1051,105 @@ def session_report(session_id):
                            course=course, records=records)
 
 
+def _build_attendance_matrix(course):
+    """Returns (sessions, students, matrix) where matrix[student_id][session_id] = bool present."""
+    sessions = ClassSession.query.filter_by(course_id=course.id).order_by(ClassSession.started_at).all()
+    students = ([e.student for e in
+                 Enrolment.query.filter_by(course_id=course.id).join(User).order_by(User.full_name).all()])
+    records = (AttendanceRecord.query.join(ClassSession)
+              .filter(ClassSession.course_id == course.id).all())
+    present_set = {(r.student_id, r.session_id) for r in records}
+    matrix = {s.id: {sess.id: (s.id, sess.id) in present_set for sess in sessions} for s in students}
+    return sessions, students, matrix
+
+
+@app.route('/courses/<int:course_id>/attendance/export/<fmt>')
+@login_required
+@role_required('lecturer')
+def export_attendance(course_id, fmt):
+    course = db.get_or_404(Course, course_id)
+    if not is_course_lecturer(course, current_user):
+        abort(403)
+    if fmt not in ('pdf', 'docx'):
+        abort(404)
+
+    sessions, students, matrix = _build_attendance_matrix(course)
+    safe_code = secure_filename(course.course_code) or 'course'
+
+    if fmt == 'pdf':
+        buf = BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                                topMargin=1.2*cm, bottomMargin=1.2*cm, leftMargin=1.2*cm, rightMargin=1.2*cm)
+        styles = getSampleStyleSheet()
+        elements = [
+            Paragraph(f"Attendance Register — {course.course_code}: {course.title}", styles['Title']),
+            Paragraph(f"Generated {datetime.now(timezone.utc).strftime('%d %b %Y, %H:%M UTC')}", styles['Normal']),
+            Spacer(1, 12),
+        ]
+        header = ['Student', 'Matric No.'] + [s.started_at.strftime('%d/%m') for s in sessions] + ['Total']
+        rows = [header]
+        for stu in students:
+            present_count = sum(1 for sess in sessions if matrix[stu.id][sess.id])
+            row = [stu.full_name, stu.id_number or '—']
+            row += ['✓' if matrix[stu.id][sess.id] else '—' for sess in sessions]
+            row.append(f"{present_count}/{len(sessions)}")
+            rows.append(row)
+        if not students:
+            rows.append(['No enrolled students yet.'] + [''] * (len(sessions) + 1))
+        table = Table(rows, repeatRows=1)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e3a8a')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')]),
+            ('ALIGN', (2, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ]))
+        elements.append(table)
+        doc.build(elements)
+        buf.seek(0)
+        return (buf.read(), 200, {
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': f'attachment; filename="attendance_{safe_code}.pdf"',
+        })
+
+    else:  # docx
+        buf = BytesIO()
+        doc = DocxDocument()
+        doc.add_heading(f"Attendance Register — {course.course_code}: {course.title}", level=1)
+        p = doc.add_paragraph(f"Generated {datetime.now(timezone.utc).strftime('%d %b %Y, %H:%M UTC')}")
+        p.runs[0].font.size = Pt(9)
+
+        cols = 2 + len(sessions) + 1
+        table = doc.add_table(rows=1, cols=cols)
+        table.style = 'Light Grid Accent 1'
+        hdr = table.rows[0].cells
+        hdr[0].text = 'Student'
+        hdr[1].text = 'Matric No.'
+        for i, sess in enumerate(sessions):
+            hdr[2 + i].text = sess.started_at.strftime('%d/%m')
+        hdr[-1].text = 'Total'
+
+        for stu in students:
+            present_count = sum(1 for sess in sessions if matrix[stu.id][sess.id])
+            row = table.add_row().cells
+            row[0].text = stu.full_name
+            row[1].text = stu.id_number or '—'
+            for i, sess in enumerate(sessions):
+                row[2 + i].text = '✓' if matrix[stu.id][sess.id] else '—'
+            row[-1].text = f"{present_count}/{len(sessions)}"
+        if not students:
+            doc.add_paragraph('No enrolled students yet.')
+
+        doc.save(buf)
+        buf.seek(0)
+        return (buf.read(), 200, {
+            'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'Content-Disposition': f'attachment; filename="attendance_{safe_code}.docx"',
+        })
+
+
 # ── Materials ─────────────────────────────────────────────────────────────────
 
 @app.route('/courses/<int:course_id>/materials/upload', methods=['POST'])
@@ -855,7 +1157,7 @@ def session_report(session_id):
 @role_required('lecturer')
 def upload_material(course_id):
     course = db.get_or_404(Course, course_id)
-    if course.lecturer_id != current_user.id:
+    if not is_course_lecturer(course, current_user):
         abort(403)
     title = request.form.get('title', '').strip()
     file  = request.files.get('file')
@@ -881,7 +1183,7 @@ def upload_material(course_id):
 def download_material(material_id):
     material = db.get_or_404(CourseMaterial, material_id)
     course   = material.course
-    if current_user.role == 'lecturer' and course.lecturer_id != current_user.id:
+    if current_user.role == 'lecturer' and not is_course_lecturer(course, current_user):
         abort(403)
     if current_user.role == 'student':
         if not Enrolment.query.filter_by(student_id=current_user.id, course_id=course.id).first():
@@ -895,7 +1197,7 @@ def download_material(material_id):
 @role_required('lecturer')
 def delete_material(material_id):
     material = db.get_or_404(CourseMaterial, material_id)
-    if material.course.lecturer_id != current_user.id:
+    if not is_course_lecturer(material.course, current_user):
         abort(403)
     course_id = material.course_id
     stored_filename = material.stored_filename
@@ -916,7 +1218,7 @@ def delete_material(material_id):
 @role_required('lecturer')
 def add_course_link(course_id):
     course = db.get_or_404(Course, course_id)
-    if course.lecturer_id != current_user.id:
+    if not is_course_lecturer(course, current_user):
         abort(403)
     title = request.form.get('title', '').strip()
     url_  = request.form.get('url', '').strip()
@@ -936,13 +1238,141 @@ def add_course_link(course_id):
 @role_required('lecturer')
 def delete_course_link(link_id):
     link = db.get_or_404(CourseLink, link_id)
-    if link.course.lecturer_id != current_user.id:
+    if not is_course_lecturer(link.course, current_user):
         abort(403)
     course_id = link.course_id
     db.session.delete(link)
     db.session.commit()
     flash('Link removed.', 'success')
     return redirect(url_for('view_course', course_id=course_id))
+
+
+# ── Assignments ──────────────────────────────────────────────────────────────
+
+@app.route('/courses/<int:course_id>/assignments/new', methods=['POST'])
+@login_required
+@role_required('lecturer')
+def create_assignment(course_id):
+    course = db.get_or_404(Course, course_id)
+    if not is_course_lecturer(course, current_user):
+        abort(403)
+    title        = request.form.get('title', '').strip()
+    instructions = request.form.get('instructions', '').strip()
+    due_date_str = request.form.get('due_date', '').strip()
+    if not title:
+        flash('An assignment title is required.', 'danger')
+        return redirect(url_for('view_course', course_id=course.id))
+    due_date = None
+    if due_date_str:
+        try:
+            due_date = datetime.strptime(due_date_str, '%Y-%m-%dT%H:%M')
+        except ValueError:
+            pass
+    db.session.add(Assignment(course_id=course.id, created_by=current_user.id,
+                              title=title, instructions=instructions, due_date=due_date))
+    db.session.commit()
+    flash('Assignment posted.', 'success')
+    return redirect(url_for('view_course', course_id=course.id))
+
+
+@app.route('/assignments/<int:assignment_id>')
+@login_required
+def view_assignment(assignment_id):
+    assignment = db.get_or_404(Assignment, assignment_id)
+    course = assignment.course
+    if current_user.role == 'lecturer' and not is_course_lecturer(course, current_user):
+        abort(403)
+    if current_user.role == 'student':
+        if not Enrolment.query.filter_by(student_id=current_user.id, course_id=course.id).first():
+            abort(403)
+
+    my_submission = None
+    submissions = []
+    if current_user.role == 'student':
+        my_submission = AssignmentSubmission.query.filter_by(
+            assignment_id=assignment.id, student_id=current_user.id).first()
+    else:
+        submissions = (AssignmentSubmission.query.filter_by(assignment_id=assignment.id)
+                       .order_by(AssignmentSubmission.submitted_at.desc()).all())
+    return render_template('assignment_detail.html', assignment=assignment, course=course,
+                           my_submission=my_submission, submissions=submissions)
+
+
+@app.route('/assignments/<int:assignment_id>/submit', methods=['POST'])
+@login_required
+@role_required('student')
+def submit_assignment(assignment_id):
+    assignment = db.get_or_404(Assignment, assignment_id)
+    course = assignment.course
+    if not Enrolment.query.filter_by(student_id=current_user.id, course_id=course.id).first():
+        abort(403)
+    file = request.files.get('file')
+    if not file or file.filename == '':
+        flash('Choose a file to submit.', 'danger')
+        return redirect(url_for('view_assignment', assignment_id=assignment.id))
+    if not allowed_submission_file(file.filename):
+        flash('That file type is not allowed for submissions.', 'danger')
+        return redirect(url_for('view_assignment', assignment_id=assignment.id))
+
+    original = secure_filename(file.filename)
+    stored   = f"{secrets.token_hex(8)}_{original}"
+    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+    file.save(os.path.join(app.config['UPLOAD_FOLDER'], stored))
+
+    # One submission per student — resubmitting replaces the previous file,
+    # so there's always exactly one clearly-identified submission per
+    # student for the lecturer to grade.
+    existing = AssignmentSubmission.query.filter_by(
+        assignment_id=assignment.id, student_id=current_user.id).first()
+    if existing:
+        old_path = os.path.join(app.config['UPLOAD_FOLDER'], existing.stored_filename)
+        if os.path.isfile(old_path):
+            try: os.remove(old_path)
+            except Exception: pass
+        existing.filename = original
+        existing.stored_filename = stored
+        existing.submitted_at = datetime.now(timezone.utc)
+    else:
+        db.session.add(AssignmentSubmission(assignment_id=assignment.id, student_id=current_user.id,
+                                            filename=original, stored_filename=stored))
+    db.session.commit()
+    flash('Assignment submitted.', 'success')
+    return redirect(url_for('view_assignment', assignment_id=assignment.id))
+
+
+@app.route('/assignments/<int:assignment_id>/delete', methods=['POST'])
+@login_required
+@role_required('lecturer')
+def delete_assignment(assignment_id):
+    assignment = db.get_or_404(Assignment, assignment_id)
+    if not is_course_lecturer(assignment.course, current_user):
+        abort(403)
+    course_id = assignment.course_id
+    stored_filenames = [s.stored_filename for s in assignment.submissions]
+    db.session.delete(assignment)  # cascades to submissions
+    db.session.commit()
+    for fname in stored_filenames:
+        try:
+            path = os.path.join(app.config['UPLOAD_FOLDER'], fname)
+            if os.path.isfile(path):
+                os.remove(path)
+        except Exception as e:
+            print(f'[DELETE_ASSIGNMENT] Could not remove file {fname}: {e}')
+    flash('Assignment deleted.', 'success')
+    return redirect(url_for('view_course', course_id=course_id))
+
+
+@app.route('/submissions/<int:submission_id>/download')
+@login_required
+def download_submission(submission_id):
+    sub = db.get_or_404(AssignmentSubmission, submission_id)
+    course = sub.assignment.course
+    is_lecturer_of_course = current_user.role == 'lecturer' and is_course_lecturer(course, current_user)
+    is_the_student = current_user.id == sub.student_id
+    if not (is_lecturer_of_course or is_the_student):
+        abort(403)
+    return send_from_directory(app.config['UPLOAD_FOLDER'], sub.stored_filename,
+                               as_attachment=True, download_name=sub.filename)
 
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
