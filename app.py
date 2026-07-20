@@ -932,12 +932,16 @@ def session_room(session_id):
     if current_user.role == 'student':
         if not Enrolment.query.filter_by(student_id=current_user.id, course_id=course.id).first():
             abort(403)
-        if not SessionParticipant.query.filter_by(session_id=session_obj.id,
-                                                   student_id=current_user.id).first():
-            if session_obj.status == 'active':
-                db.session.add(SessionParticipant(session_id=session_obj.id,
-                                                   student_id=current_user.id))
+        existing_participant = SessionParticipant.query.filter_by(
+            session_id=session_obj.id, student_id=current_user.id).first()
+        if existing_participant:
+            if not existing_participant.still_connected:
+                existing_participant.still_connected = True
                 db.session.commit()
+        elif session_obj.status == 'active':
+            db.session.add(SessionParticipant(session_id=session_obj.id,
+                                               student_id=current_user.id))
+            db.session.commit()
 
     participants  = SessionParticipant.query.filter_by(session_id=session_obj.id).all()
     attendance    = AttendanceRecord.query.filter_by(session_id=session_obj.id).all()
@@ -990,7 +994,7 @@ def turn_credentials():
 @login_required
 def session_participants_json(session_id):
     session_obj  = db.get_or_404(ClassSession, session_id)
-    participants = SessionParticipant.query.filter_by(session_id=session_obj.id).all()
+    participants = SessionParticipant.query.filter_by(session_id=session_obj.id, still_connected=True).all()
     attendance_ids = {a.student_id for a in
                       AttendanceRecord.query.filter_by(session_id=session_obj.id).all()}
     data = [{'student_id': p.student_id, 'name': p.student.full_name,
@@ -1397,14 +1401,38 @@ def delete_user(user_id):
 # between peers; it never handles media — all video/audio flows peer-to-peer
 # via WebRTC using Google's free STUN servers.
 
+# Maps a live socket connection (sid) to who it belongs to. Needed because
+# Socket.IO's 'disconnect' event doesn't carry the original join payload —
+# without this we'd have no reliable way to know who dropped when a phone
+# gets locked, a tab is killed, or the network drops, none of which fire
+# the client's 'beforeunload' cleanup in time (or at all, on mobile).
+sid_registry = {}
+
+
+def _mark_participant_disconnected(session_id, user_id):
+    sp = SessionParticipant.query.filter_by(session_id=session_id, student_id=user_id).first()
+    if sp:
+        sp.still_connected = False
+        db.session.commit()
+
+
 @socketio.on('join-video-room')
 def on_join_video(data):
     room      = f"session_{data['session_id']}"
     user_id   = data['user_id']
     user_name = data['user_name']
     join_room(room)
+    sid_registry[request.sid] = {'session_id': data['session_id'], 'user_id': user_id, 'user_name': user_name}
     # Tell everyone else in the room that a new peer has arrived
     emit('peer-joined', {'user_id': user_id, 'user_name': user_name}, to=room, skip_sid=request.sid)  # noqa
+
+    # If this is a student rejoining after a previous disconnect, flip them
+    # back to "connected" so they reappear in the lecturer's roster.
+    if current_user.is_authenticated and current_user.role == 'student':
+        sp = SessionParticipant.query.filter_by(session_id=data['session_id'], student_id=current_user.id).first()
+        if sp and not sp.still_connected:
+            sp.still_connected = True
+            db.session.commit()
 
 
 @socketio.on('leave-video-room')
@@ -1412,6 +1440,35 @@ def on_leave_video(data):
     room = f"session_{data['session_id']}"
     leave_room(room)
     emit('peer-left', {'user_id': data['user_id']}, to=room)
+    _mark_participant_disconnected(data['session_id'], data['user_id'])
+    sid_registry.pop(request.sid, None)
+
+
+@socketio.on('disconnect')
+def on_socket_disconnect():
+    """Catches every disconnect — clean or not. This is what actually makes
+    'remove them from the session when they leave' reliable, since mobile
+    browsers frequently kill a page without giving 'beforeunload' JS time
+    to run (locking the screen, force-closing the tab/app, losing signal)."""
+    info = sid_registry.pop(request.sid, None)
+    if not info:
+        return
+    room = f"session_{info['session_id']}"
+    emit('peer-left', {'user_id': info['user_id']}, to=room)
+    _mark_participant_disconnected(info['session_id'], info['user_id'])
+
+
+@socketio.on('camera-state-changed')
+def on_camera_state_changed(data):
+    """Relayed so every remote peer can show an accurate placeholder
+    (avatar + name) instead of a frozen/black video square when someone's
+    camera is off — while their audio, if unmuted, keeps working
+    independently. Relying on raw WebRTC track state for this is
+    inconsistent across browsers, so the app signals it explicitly."""
+    room = f"session_{data['session_id']}"
+    emit('camera-state-changed', {
+        'user_id': data['user_id'], 'camera_on': bool(data.get('camera_on'))
+    }, to=room, skip_sid=request.sid)
 
 
 @socketio.on('offer')

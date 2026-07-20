@@ -73,6 +73,16 @@ function createVideoTile(userId, name, muted = false) {
   label.className  = 'video-label';
   label.textContent = name;
 
+  // Shown instead of the video element when this person's camera is off
+  // but they're still audible — makes clear they're present and can be
+  // heard, rather than looking like a frozen black square or having them
+  // disappear from the call entirely.
+  const placeholder = document.createElement('div');
+  placeholder.className = 'video-audio-only-placeholder';
+  placeholder.id = `placeholder-${userId}`;
+  const initials = (name || '?').trim().split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
+  placeholder.innerHTML = `<div class="avatar-circle">${initials}</div><div class="audio-only-label">🎙 Audio only</div>`;
+
   // Fullscreen toggle — makes the tile fill the phone/laptop screen for a
   // much clearer view, especially useful on small mobile screens where the
   // default grid tile is quite small.
@@ -87,6 +97,7 @@ function createVideoTile(userId, name, muted = false) {
   });
 
   tile.appendChild(video);
+  tile.appendChild(placeholder);
   tile.appendChild(label);
   tile.appendChild(fsBtn);
 
@@ -128,6 +139,17 @@ function setVideoStream(userId, stream) {
   if (video) video.srcObject = stream;
 }
 
+function showAudioOnlyPlaceholder(userId, name) {
+  if (!document.getElementById(`tile-${userId}`)) createVideoTile(userId, name, userId === CC_USER_ID);
+  const tile = document.getElementById(`tile-${userId}`);
+  if (tile) tile.classList.add('camera-off');
+}
+
+function hideAudioOnlyPlaceholder(userId) {
+  const tile = document.getElementById(`tile-${userId}`);
+  if (tile) tile.classList.remove('camera-off');
+}
+
 // ── Local media ───────────────────────────────────────────────────────────────
 
 async function startCamera() {
@@ -137,6 +159,7 @@ async function startCamera() {
     createVideoTile(CC_USER_ID, CC_USER_NAME + ' (You)', true);
     setVideoStream(CC_USER_ID, localStream);
     addLocalTracksToPeers();
+    socket.emit('camera-state-changed', { session_id: CC_SESSION_ID, user_id: CC_USER_ID, camera_on: true });
     setStatus('Camera on.');
     document.getElementById('btn-camera').textContent = '📷 Stop Camera';
     document.getElementById('btn-camera').dataset.active = '1';
@@ -147,18 +170,37 @@ async function startCamera() {
 }
 
 function stopCamera() {
+  // IMPORTANT: this only stops the VIDEO. The mic keeps working — someone
+  // with their camera off but mic unmuted should still be heard, the same
+  // way Zoom/Meet/Teams behave. Previously this stopped every track
+  // (audio included), which silently killed a student's mic the moment
+  // they turned their camera off.
   if (localStream) {
-    localStream.getTracks().forEach(t => t.stop());
-    localStream = null;
+    const videoTracks = localStream.getVideoTracks();
+    videoTracks.forEach(t => { t.stop(); localStream.removeTrack(t); });
   }
-  removeVideoTile(CC_USER_ID);
-  // Replace tracks in existing peer connections with silence/black
+  currentVideoTrack = null;
+
+  // Stop sending video to peers specifically — leave every audio sender
+  // completely alone.
   Object.values(peers).forEach(pc => {
     pc.getSenders().forEach(sender => {
-      if (sender.track) sender.track.stop();
+      if (sender.track && sender.track.kind === 'video') {
+        sender.track.stop();
+        sender.replaceTrack(null);
+      }
     });
   });
-  setStatus('Camera off.');
+
+  // Keep the local tile if the mic is still active (audio-only), otherwise
+  // remove it entirely (nothing left to show or send).
+  if (localStream && localStream.getAudioTracks().length) {
+    showAudioOnlyPlaceholder(CC_USER_ID, CC_USER_NAME + ' (You)');
+  } else {
+    removeVideoTile(CC_USER_ID);
+  }
+  socket.emit('camera-state-changed', { session_id: CC_SESSION_ID, user_id: CC_USER_ID, camera_on: false });
+  setStatus('Camera off — your mic is still active if unmuted.');
   document.getElementById('btn-camera').textContent = '📷 Start Camera';
   document.getElementById('btn-camera').dataset.active = '0';
 }
@@ -479,6 +521,17 @@ function createPeerConnection(remoteUserId, remoteName) {
   peers[remoteUserId]    = pc;
   peerNames[remoteUserId] = remoteName;
 
+  // "Perfect negotiation" pattern (see MDN): both sides can independently
+  // decide to renegotiate (e.g. both turn cameras on around the same
+  // moment), which can produce two colliding offers. Deterministically
+  // picking one side as "polite" (backs off and accepts the incoming
+  // offer) and the other as "impolite" (keeps its own offer, ignores the
+  // incoming one) resolves the collision the same way on both ends
+  // without any extra coordination.
+  const polite = CC_USER_ID < remoteUserId;
+  let makingOffer = false;
+  let ignoreOffer = false;
+
   // Add local tracks if we have them — audio from the mic, video from
   // whatever is CURRENTLY live (camera or screen). This matters when a
   // remote peer joins/connects after screen-sharing has already started:
@@ -490,6 +543,32 @@ function createPeerConnection(remoteUserId, remoteName) {
   if (currentVideoTrack) {
     pc.addTrack(currentVideoTrack, localStream || new MediaStream([currentVideoTrack]));
   }
+
+  // CRITICAL: without this, tracks added AFTER the initial offer/answer
+  // (e.g. the lecturer starts their camera only after a student has
+  // already joined and connected) get added to the sender locally but
+  // never actually reach the remote peer — the browser fires
+  // 'negotiationneeded' precisely to request a fresh offer/answer round
+  // for exactly this situation, but nothing was listening for it before.
+  // This was the main cause of "sometimes I can't see/hear the student
+  // and they can't see/hear me."
+  pc.onnegotiationneeded = async () => {
+    try {
+      makingOffer = true;
+      await pc.setLocalDescription();
+      socket.emit('offer', {
+        session_id : CC_SESSION_ID,
+        to         : remoteUserId,
+        from       : CC_USER_ID,
+        from_name  : CC_USER_NAME,
+        sdp        : pc.localDescription.toJSON()
+      });
+    } catch (e) {
+      console.warn('Renegotiation failed', e);
+    } finally {
+      makingOffer = false;
+    }
+  };
 
   pc.onicecandidate = ({ candidate }) => {
     if (candidate) {
@@ -509,12 +588,37 @@ function createPeerConnection(remoteUserId, remoteName) {
     setVideoStream(remoteUserId, streams[0]);
   };
 
-  pc.onconnectionstatechange = () => {
-    if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
+  // ICE connection health: 'disconnected' is often a brief, self-recovering
+  // blip (a few dropped packets, a network handover) — tearing everything
+  // down immediately on that state (as this used to do) is what made the
+  // connection feel so fragile. Now: give it a few seconds to recover on
+  // its own, then try an ICE restart before giving up entirely.
+  let recoveryTimer = null;
+  pc.oniceconnectionstatechange = () => {
+    const state = pc.iceConnectionState;
+    if (state === 'disconnected') {
+      setStatus(`Connection to ${remoteName || 'a participant'} is unstable, trying to recover…`);
+      clearTimeout(recoveryTimer);
+      recoveryTimer = setTimeout(() => {
+        if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+          try { pc.restartIce(); } catch (e) { console.warn('restartIce failed', e); }
+        }
+      }, 3000);
+    } else if (state === 'failed') {
+      try { pc.restartIce(); } catch (e) { console.warn('restartIce failed', e); }
+    } else if (state === 'connected' || state === 'completed') {
+      clearTimeout(recoveryTimer);
+    } else if (state === 'closed') {
+      clearTimeout(recoveryTimer);
       removeVideoTile(remoteUserId);
       delete peers[remoteUserId];
     }
   };
+
+  pc._polite = polite;
+  pc._isMakingOffer = () => makingOffer;
+  pc._setIgnoreOffer = (v) => { ignoreOffer = v; };
+  pc._shouldIgnoreOffer = () => ignoreOffer;
 
   return pc;
 }
@@ -523,52 +627,92 @@ function createPeerConnection(remoteUserId, remoteName) {
 
 function initSocket() {
   socket = io();
+  let hasConnectedBefore = false;
 
   socket.on('connect', () => {
+    if (hasConnectedBefore) {
+      // This is a RECONNECT (network blip, phone woke back up, etc.), not
+      // the first connection. Any peer connections from before are now
+      // almost certainly stale/broken — tear them down so the fresh
+      // 'peer-joined' events every other participant's server-side
+      // handler will emit (once they see us rejoin) rebuild clean ones,
+      // instead of us hanging onto dead connections that will never
+      // recover on their own.
+      Object.values(peers).forEach(pc => pc.close());
+      Object.keys(peers).forEach(id => delete peers[id]);
+      document.querySelectorAll('.video-tile').forEach(t => {
+        if (t.id !== `tile-${CC_USER_ID}`) t.remove();
+      });
+      setStatus('Reconnected — restoring video…');
+    } else {
+      setStatus('Connected. Use the buttons below to enable camera or share screen.');
+    }
+    hasConnectedBefore = true;
     socket.emit('join-video-room', {
       session_id : CC_SESSION_ID,
       user_id    : CC_USER_ID,
       user_name  : CC_USER_NAME
     });
-    setStatus('Connected. Use the buttons below to enable camera or share screen.');
   });
 
-  // A new peer joined → we initiate the offer
-  socket.on('peer-joined', async ({ user_id, user_name }) => {
+  // A new peer joined → just create the connection; onnegotiationneeded
+  // (added in createPeerConnection) automatically sends an offer once
+  // there are tracks to negotiate. This also means a LATER camera start
+  // triggers the same path, so it no longer matters whether someone turns
+  // their camera on before or after another participant joins.
+  socket.on('peer-joined', ({ user_id, user_name }) => {
     if (user_id === CC_USER_ID) return;
     setStatus(`${user_name} joined.`);
-    const pc    = createPeerConnection(user_id, user_name);
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    socket.emit('offer', {
-      session_id : CC_SESSION_ID,
-      to         : user_id,
-      from       : CC_USER_ID,
-      from_name  : CC_USER_NAME,
-      sdp        : pc.localDescription.toJSON()
+    createPeerConnection(user_id, user_name);
+    // Let the newcomer know our current camera state right away — they'd
+    // otherwise only find out the next time we happen to toggle it.
+    const camBtn = document.getElementById('btn-camera');
+    socket.emit('camera-state-changed', {
+      session_id: CC_SESSION_ID, user_id: CC_USER_ID, camera_on: camBtn ? camBtn.dataset.active === '1' : false
     });
   });
 
-  // Incoming offer → create peer connection and send answer
+  // Incoming offer → create peer connection and send answer. Implements
+  // the "perfect negotiation" collision rule: if both sides happen to
+  // send an offer at nearly the same time, the polite side backs off and
+  // accepts the other's offer instead of both getting stuck.
   socket.on('offer', async ({ from, from_name, sdp }) => {
     if (from === CC_USER_ID) return;
     const pc = createPeerConnection(from, from_name);
-    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    socket.emit('answer', {
-      session_id : CC_SESSION_ID,
-      to         : from,
-      from       : CC_USER_ID,
-      sdp        : pc.localDescription.toJSON()
-    });
+    const offerCollision = (pc._isMakingOffer() || pc.signalingState !== 'stable');
+    pc._setIgnoreOffer(!pc._polite && offerCollision);
+    if (pc._shouldIgnoreOffer()) return;   // impolite: our own offer will win, ignore theirs
+
+    try {
+      if (offerCollision) {
+        // polite peer: roll back our own pending offer to accept theirs
+        await Promise.all([
+          pc.setLocalDescription({ type: 'rollback' }),
+          pc.setRemoteDescription(new RTCSessionDescription(sdp)),
+        ]);
+      } else {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      }
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('answer', {
+        session_id : CC_SESSION_ID,
+        to         : from,
+        from       : CC_USER_ID,
+        sdp        : pc.localDescription.toJSON()
+      });
+    } catch (e) {
+      console.warn('Failed to handle incoming offer', e);
+    }
   });
 
   // Incoming answer
   socket.on('answer', async ({ from, sdp }) => {
     if (from === CC_USER_ID) return;
     const pc = peers[from];
-    if (pc) await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    if (!pc) return;
+    try { await pc.setRemoteDescription(new RTCSessionDescription(sdp)); }
+    catch (e) { console.warn('Failed to apply answer', e); }
   });
 
   // Incoming ICE candidate
@@ -598,6 +742,11 @@ function initSocket() {
   socket.on('hand-lowered', ({ user_id }) => removeRaisedHandEntry(user_id));
   socket.on('spotlight-changed', ({ user_id }) => applySpotlight(user_id));
   socket.on('force-mute', ({ user_id }) => { if (user_id === CC_USER_ID) applyForcedMute(true); });
+  socket.on('camera-state-changed', ({ user_id, camera_on }) => {
+    if (user_id === CC_USER_ID) return;
+    if (camera_on) hideAudioOnlyPlaceholder(user_id);
+    else showAudioOnlyPlaceholder(user_id, peerNames[user_id] || 'Participant');
+  });
   socket.on('force-unmute', ({ user_id }) => { if (user_id === CC_USER_ID) applyForcedMute(false); });
 
   socket.on('chat-message', renderChatMessage);
