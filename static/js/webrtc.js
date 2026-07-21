@@ -206,6 +206,16 @@ function stopCamera() {
 }
 
 async function shareScreen() {
+  // Chrome/Firefox on Android (and most mobile browsers) expose this API
+  // but don't actually implement it — calling it always rejects. This is
+  // a genuine platform limitation, not something fixable from this app;
+  // catch it upfront with a clear message rather than a vague failure
+  // after the fact.
+  const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+  if (isMobile) {
+    setStatus('Screen sharing isn\'t supported by mobile browsers — try from a laptop or desktop instead.');
+    return;
+  }
   try {
     screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
     const videoTrack = screenStream.getVideoTracks()[0];
@@ -270,6 +280,21 @@ function toggleMute() {
 // ── Raise hand (students) ───────────────────────────────────────────────────
 
 let handRaised = false;
+let presenceHeartbeatTimer = null;
+
+function startPresenceHeartbeat() {
+  // Every 10s while connected, tell the server "still here". The roster
+  // on the lecturer's side is built from this, not a one-time flag — so
+  // someone who actually left (however that happened) simply stops
+  // appearing within ~25s, without depending on catching an exact
+  // disconnect moment.
+  clearInterval(presenceHeartbeatTimer);
+  presenceHeartbeatTimer = setInterval(() => {
+    if (socket && socket.connected) {
+      socket.emit('presence-heartbeat', { session_id: CC_SESSION_ID });
+    }
+  }, 10000);
+}
 
 function toggleRaiseHand() {
   handRaised = !handRaised;
@@ -353,6 +378,11 @@ function applyForcedMute(muted) {
 // ── Student screen-share approval ───────────────────────────────────────────
 
 function requestScreenShareApproval() {
+  const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+  if (isMobile) {
+    setStatus('Screen sharing isn\'t supported by mobile browsers — try from a laptop or desktop instead.');
+    return;
+  }
   setStatus('Requesting permission to share your screen…');
   socket.emit('request-screen-share', { session_id: CC_SESSION_ID });
 }
@@ -653,6 +683,7 @@ function initSocket() {
       user_id    : CC_USER_ID,
       user_name  : CC_USER_NAME
     });
+    startPresenceHeartbeat();
   });
 
   // A new peer joined → just create the connection; onnegotiationneeded
@@ -817,6 +848,7 @@ function wireButtons() {
 
   // Clean up on page unload
   window.addEventListener('beforeunload', () => {
+    clearInterval(presenceHeartbeatTimer);
     socket?.emit('leave-video-room', { session_id: CC_SESSION_ID, user_id: CC_USER_ID });
     if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
     stopCamera();

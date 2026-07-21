@@ -255,6 +255,7 @@ class SessionParticipant(db.Model):
     student_id      = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     joined_at       = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     still_connected = db.Column(db.Boolean, default=True)
+    last_seen       = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     student         = db.relationship('User', foreign_keys=[student_id])
     __table_args__  = (db.UniqueConstraint('session_id', 'student_id', name='uq_session_student'),)
 
@@ -313,6 +314,9 @@ def ensure_schema_upgrades():
         },
         'courses': {
             'lecturer_invite_code': 'VARCHAR(10)',
+        },
+        'session_participants': {
+            'last_seen': 'TIMESTAMP' if is_postgres else 'DATETIME',
         },
     }
     existing_tables = set(inspector.get_table_names())
@@ -990,11 +994,24 @@ def turn_credentials():
     return jsonify(fallback)
 
 
+def _currently_connected_participants(session_id):
+    """The real, self-healing definition of 'connected right now': not just
+    the still_connected flag (which can get stuck if a disconnect event was
+    ever missed), but also a recent heartbeat. Someone whose last heartbeat
+    is older than PRESENCE_STALE_SECONDS is treated as gone, regardless of
+    what the flag says."""
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=PRESENCE_STALE_SECONDS)
+    return (SessionParticipant.query
+            .filter_by(session_id=session_id, still_connected=True)
+            .filter(SessionParticipant.last_seen >= cutoff)
+            .all())
+
+
 @app.route('/sessions/<int:session_id>/participants')
 @login_required
 def session_participants_json(session_id):
     session_obj  = db.get_or_404(ClassSession, session_id)
-    participants = SessionParticipant.query.filter_by(session_id=session_obj.id, still_connected=True).all()
+    participants = _currently_connected_participants(session_obj.id)
     attendance_ids = {a.student_id for a in
                       AttendanceRecord.query.filter_by(session_id=session_obj.id).all()}
     data = [{'student_id': p.student_id, 'name': p.student.full_name,
@@ -1011,8 +1028,7 @@ def take_attendance(session_id):
     session_obj = db.get_or_404(ClassSession, session_id)
     if not is_course_lecturer(session_obj.course, current_user):
         abort(403)
-    participants = SessionParticipant.query.filter_by(session_id=session_obj.id,
-                                                       still_connected=True).all()
+    participants = _currently_connected_participants(session_obj.id)
     already = {a.student_id for a in
                AttendanceRecord.query.filter_by(session_id=session_obj.id).all()}
     count = 0
@@ -1406,7 +1422,29 @@ def delete_user(user_id):
 # without this we'd have no reliable way to know who dropped when a phone
 # gets locked, a tab is killed, or the network drops, none of which fire
 # the client's 'beforeunload' cleanup in time (or at all, on mobile).
+#
+# IMPORTANT: this dict lives in process memory, and Render's free tier
+# spins the whole process down after ~15 minutes idle (and restarts it on
+# the next request). A restart wipes this dict, so relying on the
+# disconnect-event path ALONE would leave anyone who was connected before
+# the restart stuck marked "still connected" forever — nothing would ever
+# fire a disconnect for them again. To make this self-healing regardless
+# of restarts, PRESENCE_STALE_SECONDS below is the real source of truth:
+# every connected client sends a periodic heartbeat, and anyone whose
+# heartbeat has gone stale (whatever the reason — clean leave, crash,
+# network drop, or a server restart in between) simply stops showing up,
+# without needing to catch the exact moment they left.
 sid_registry = {}
+PRESENCE_STALE_SECONDS = 25   # heartbeat is sent every 10s client-side
+
+
+def _touch_participant(session_id, user_id):
+    """Mark a student as freshly seen — called on join and on every heartbeat."""
+    sp = SessionParticipant.query.filter_by(session_id=session_id, student_id=user_id).first()
+    if sp:
+        sp.still_connected = True
+        sp.last_seen = datetime.now(timezone.utc)
+        db.session.commit()
 
 
 def _mark_participant_disconnected(session_id, user_id):
@@ -1426,13 +1464,18 @@ def on_join_video(data):
     # Tell everyone else in the room that a new peer has arrived
     emit('peer-joined', {'user_id': user_id, 'user_name': user_name}, to=room, skip_sid=request.sid)  # noqa
 
-    # If this is a student rejoining after a previous disconnect, flip them
-    # back to "connected" so they reappear in the lecturer's roster.
     if current_user.is_authenticated and current_user.role == 'student':
-        sp = SessionParticipant.query.filter_by(session_id=data['session_id'], student_id=current_user.id).first()
-        if sp and not sp.still_connected:
-            sp.still_connected = True
-            db.session.commit()
+        _touch_participant(data['session_id'], current_user.id)
+
+
+@socketio.on('presence-heartbeat')
+def on_presence_heartbeat(data):
+    """Sent every ~10s by the client while the session page is open and
+    connected. This is what actually keeps someone showing as 'connected'
+    — not a one-time flag — so the roster self-heals if a disconnect was
+    ever missed (including across a Render free-tier restart)."""
+    if current_user.is_authenticated and current_user.role == 'student':
+        _touch_participant(data['session_id'], current_user.id)
 
 
 @socketio.on('leave-video-room')
@@ -1446,10 +1489,9 @@ def on_leave_video(data):
 
 @socketio.on('disconnect')
 def on_socket_disconnect():
-    """Catches every disconnect — clean or not. This is what actually makes
-    'remove them from the session when they leave' reliable, since mobile
-    browsers frequently kill a page without giving 'beforeunload' JS time
-    to run (locking the screen, force-closing the tab/app, losing signal)."""
+    """Catches clean-ish disconnects for IMMEDIATE roster updates (nicer
+    UX than waiting out the heartbeat timeout). The heartbeat timeout
+    above is what guarantees correctness even when this never fires."""
     info = sid_registry.pop(request.sid, None)
     if not info:
         return
