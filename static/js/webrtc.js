@@ -533,6 +533,54 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
+// ── Browse together ──────────────────────────────────────────────────────────
+// Synced navigation, not screen capture — works on any device including
+// phones, unlike screen sharing. See the server-side comment in app.py
+// for the unavoidable "some sites block iframe embedding" caveat; the
+// "Open in new tab" link is the guaranteed-to-work fallback for those.
+
+function startBrowseTogether() {
+  const input = document.getElementById('browse-url-input');
+  if (!input) return;
+  const url = input.value.trim();
+  if (!url) return;
+  socket.emit('browse-navigate', { session_id: CC_SESSION_ID, url });
+}
+
+function closeBrowseTogether() {
+  socket.emit('browse-close', { session_id: CC_SESSION_ID });
+}
+
+function showSharedBrowseUrl(url) {
+  const viewer = document.getElementById('browse-viewer');
+  const frame  = document.getElementById('browse-frame');
+  const link   = document.getElementById('browse-open-tab');
+  if (!viewer || !frame) return;
+  frame.src = url;
+  if (link) link.href = url;
+  viewer.style.display = 'block';
+
+  const btn = document.getElementById('btn-browse');
+  if (btn) { btn.textContent = '🌐 Change Page'; btn.dataset.active = '1'; }
+  const urlInput = document.getElementById('browse-url-input');
+  if (urlInput) urlInput.value = url;
+}
+
+function hideSharedBrowseUrl() {
+  const viewer = document.getElementById('browse-viewer');
+  const frame  = document.getElementById('browse-frame');
+  if (viewer) viewer.style.display = 'none';
+  if (frame) frame.src = 'about:blank';
+  const btn = document.getElementById('btn-browse');
+  if (btn) { btn.textContent = '🌐 Browse Together'; btn.dataset.active = '0'; }
+}
+
+function loadPersistedBrowseUrl() {
+  // Restores the shared page on refresh or when re-entering an active
+  // session — same persistence pattern as chat history.
+  if (CC_CURRENT_BROWSE_URL) showSharedBrowseUrl(CC_CURRENT_BROWSE_URL);
+}
+
 // ── Session recording (lecturer) ────────────────────────────────────────────
 // IMPORTANT LIMITATION: this records only the LECTURER's own outgoing
 // audio/video (camera or screen, whichever is currently active) — it does
@@ -857,6 +905,8 @@ function initSocket() {
 
   socket.on('chat-message', renderChatMessage);
   socket.on('chat-message-edited', ({ id, text }) => applyEditedMessage(id, text));
+  socket.on('browse-navigate', ({ url }) => showSharedBrowseUrl(url));
+  socket.on('browse-closed', () => hideSharedBrowseUrl());
 
   socket.on('screen-share-requested', ({ user_id, user_name }) => {
     if (CC_USER_ROLE === 'lecturer') addScreenShareRequestEntry(user_id, user_name);
@@ -912,6 +962,22 @@ function wireButtons() {
     btnRecord.dataset.active === '1' ? stopRecording() : startRecording();
   });
 
+  const btnBrowse = document.getElementById('btn-browse');
+  const browsePanel = document.getElementById('browse-panel');
+  if (btnBrowse && browsePanel) {
+    btnBrowse.addEventListener('click', () => {
+      browsePanel.style.display = browsePanel.style.display === 'none' ? 'block' : 'none';
+    });
+  }
+  const browseGoBtn = document.getElementById('browse-go-btn');
+  if (browseGoBtn) browseGoBtn.addEventListener('click', startBrowseTogether);
+  const browseUrlInput = document.getElementById('browse-url-input');
+  if (browseUrlInput) browseUrlInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); startBrowseTogether(); }
+  });
+  const browseCloseBtn = document.getElementById('browse-close-btn');
+  if (browseCloseBtn) browseCloseBtn.addEventListener('click', closeBrowseTogether);
+
   const chatSendBtn = document.getElementById('chat-send-btn');
   if (chatSendBtn) chatSendBtn.addEventListener('click', sendChatMessage);
   const chatInput = document.getElementById('chat-input');
@@ -941,5 +1007,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initSocket();
   wireButtons();
   loadChatHistory();
+  loadPersistedBrowseUrl();
   loadIceServers(); // fires in the background, has its own 6s timeout
 });

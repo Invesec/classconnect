@@ -287,6 +287,7 @@ class ClassSession(db.Model):
     status     = db.Column(db.String(20), default='active')   # active | closed
     started_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     closed_at  = db.Column(db.DateTime)
+    current_browse_url = db.Column(db.String(2000))   # "browse together" — see below
 
     participants       = db.relationship('SessionParticipant', backref='session', lazy=True, cascade='all, delete-orphan')
     attendance_records = db.relationship('AttendanceRecord',   backref='session', lazy=True, cascade='all, delete-orphan')
@@ -378,6 +379,9 @@ def ensure_schema_upgrades():
         },
         'session_participants': {
             'last_seen': 'TIMESTAMP' if is_postgres else 'DATETIME',
+        },
+        'class_sessions': {
+            'current_browse_url': 'VARCHAR(2000)',
         },
     }
     existing_tables = set(inspector.get_table_names())
@@ -1745,6 +1749,52 @@ def on_edit_chat_message(data):
     emit('chat-message-edited', {
         'id': msg.id, 'text': msg.text, 'edited': True
     }, to=room)
+
+
+# ── Browse together ──────────────────────────────────────────────────────────
+# Lets the lecturer navigate to a URL and have every participant's browser
+# follow along automatically — a lightweight alternative to full screen
+# sharing that works on ANY device including phones, since it's just
+# synced navigation, not screen capture (which mobile browsers don't
+# support at all — see the screen-share code for that limitation).
+#
+# Real constraint, unavoidable: many sites (YouTube's normal pages,
+# Google, most banks, and plenty of others) send headers that block being
+# embedded in an iframe at all. Nothing server-side or client-side here
+# can override that — it's the target site's own security policy. The
+# frontend always shows an "Open in new tab" link alongside the embed
+# attempt specifically so participants still land on the right page even
+# when the embed itself is refused.
+
+@socketio.on('browse-navigate')
+def on_browse_navigate(data):
+    if not current_user.is_authenticated or current_user.role != 'lecturer':
+        return
+    session_obj = db.session.get(ClassSession, data.get('session_id'))
+    if not session_obj or not is_course_lecturer(session_obj.course, current_user):
+        return
+    url = (data.get('url') or '').strip()
+    if not url:
+        return
+    if not (url.startswith('http://') or url.startswith('https://')):
+        url = 'https://' + url
+    if len(url) > 2000:
+        return
+    session_obj.current_browse_url = url
+    db.session.commit()
+    emit('browse-navigate', {'url': url}, to=f"session_{session_obj.id}")
+
+
+@socketio.on('browse-close')
+def on_browse_close(data):
+    if not current_user.is_authenticated or current_user.role != 'lecturer':
+        return
+    session_obj = db.session.get(ClassSession, data.get('session_id'))
+    if not session_obj or not is_course_lecturer(session_obj.course, current_user):
+        return
+    session_obj.current_browse_url = None
+    db.session.commit()
+    emit('browse-closed', {}, to=f"session_{session_obj.id}")
 
 
 # ── Student screen-share approval ───────────────────────────────────────────

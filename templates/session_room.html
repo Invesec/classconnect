@@ -9,6 +9,7 @@ const CC_USER_NAME  = {{ current_user.full_name | tojson }};
 const CC_USER_ROLE  = {{ current_user.role | tojson }};
 const CC_COURSE_ID  = {{ course.id }};
 const CC_CHAT_HISTORY = {{ chat_history_json | tojson }};
+const CC_CURRENT_BROWSE_URL = {{ (session.current_browse_url or '') | tojson }};
 </script>
 
 <div class="session-header animate-fade">
@@ -50,9 +51,19 @@ const CC_CHAT_HISTORY = {{ chat_history_json | tojson }};
     {% endif %}
     {% if current_user.role == 'lecturer' %}
     <button class="btn-video btn-video-secondary" id="btn-record" data-active="0">⏺ Record Session</button>
+    <button class="btn-video btn-video-secondary" id="btn-browse" data-active="0">🌐 Browse Together</button>
     {% endif %}
     <span id="video-status" class="video-status">Connecting to video server…</span>
   </div>
+  {% if current_user.role == 'lecturer' %}
+  <div id="browse-panel" class="browse-panel" style="display:none;">
+    <div class="browse-input-row">
+      <input type="text" id="browse-url-input" class="form-input" placeholder="Paste a URL to browse together, e.g. wikipedia.org/wiki/...">
+      <button type="button" id="browse-go-btn" class="btn btn-primary btn-sm">Go</button>
+      <button type="button" id="browse-close-btn" class="btn btn-secondary btn-sm">✕ Close for everyone</button>
+    </div>
+  </div>
+  {% endif %}
   {% if current_user.role == 'lecturer' %}
   <div id="raised-hands-panel" class="raised-hands-panel" style="display:none;">
     <div class="raised-hands-title">🖐 Students waiting to ask a question</div>
@@ -68,6 +79,19 @@ const CC_CHAT_HISTORY = {{ chat_history_json | tojson }};
       Enable your camera or wait for others to join the video call.
     </div>
   </div>
+
+  <!-- Browse together viewer -->
+  <div id="browse-viewer" class="browse-viewer" style="display:none;">
+    <div class="browse-viewer-bar">
+      <span>🌐 Your {{ labels.admin_role|lower }} is browsing:</span>
+      <a id="browse-open-tab" href="#" target="_blank" rel="noopener noreferrer" class="browse-open-link">Open in new tab ↗</a>
+    </div>
+    <iframe id="browse-frame" class="browse-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+    <div class="browse-blocked-note">
+      Not loading? Some sites don't allow being shown this way — use "Open in new tab" above instead.
+    </div>
+  </div>
+
   {% if current_user.role == 'student' %}
   <div class="text-muted" style="margin-top:.75rem;font-size:.8rem;color:#94a3b8;">
     📍 Stay on this page — your lecturer marks you present from here.
