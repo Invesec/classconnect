@@ -439,17 +439,92 @@ function addEmojiToChat(emoji) {
   if (input) { input.value += emoji; input.focus(); }
 }
 
-function renderChatMessage({ user_id, user_name, role, text, ts }) {
+function loadChatHistory() {
+  // Replays everything sent so far in this session — this is what makes
+  // refreshing the page, or leaving and re-entering an active session,
+  // no longer lose the conversation.
+  (CC_CHAT_HISTORY || []).forEach(renderChatMessage);
+}
+
+function renderChatMessage({ id, user_id, user_name, role, text, ts, edited }) {
   const list = document.getElementById('chat-messages');
   if (!list) return;
+  const isOwn = user_id === CC_USER_ID;
   const row = document.createElement('div');
-  row.className = 'chat-msg' + (user_id === CC_USER_ID ? ' chat-msg-own' : '');
+  row.className = 'chat-msg' + (isOwn ? ' chat-msg-own' : '');
+  if (id != null) row.id = `chat-msg-${id}`;
   const roleTag = role === 'lecturer' ? ' 👨‍🏫' : '';
-  row.innerHTML = `<div class="chat-msg-meta">${escapeHtml(user_name)}${roleTag} · ${ts}</div>
-                    <div class="chat-msg-text"></div>`;
-  row.querySelector('.chat-msg-text').textContent = text; // textContent, never innerHTML, for the message body
+
+  const meta = document.createElement('div');
+  meta.className = 'chat-msg-meta';
+  meta.textContent = `${user_name}${roleTag} · ${ts}`;
+  if (isOwn && id != null) {
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'chat-edit-btn';
+    editBtn.textContent = '✏️ Edit';
+    editBtn.addEventListener('click', () => startEditingMessage(id));
+    meta.appendChild(editBtn);
+  }
+
+  const body = document.createElement('div');
+  body.className = 'chat-msg-text';
+  body.textContent = text; // textContent, never innerHTML, for the message body
+
+  const editedTag = document.createElement('span');
+  editedTag.className = 'chat-edited-tag';
+  editedTag.textContent = edited ? ' (edited)' : '';
+  editedTag.style.display = edited ? 'inline' : 'none';
+
+  row.appendChild(meta);
+  row.appendChild(body);
+  body.appendChild(editedTag);
   list.appendChild(row);
   list.scrollTop = list.scrollHeight;
+}
+
+function startEditingMessage(messageId) {
+  const row = document.getElementById(`chat-msg-${messageId}`);
+  if (!row) return;
+  const bodyEl = row.querySelector('.chat-msg-text');
+  if (!bodyEl || row.querySelector('.chat-edit-input')) return; // already editing
+
+  const currentText = bodyEl.firstChild ? bodyEl.firstChild.textContent : '';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'form-input chat-edit-input';
+  input.value = currentText;
+  input.maxLength = 1000;
+  bodyEl.style.display = 'none';
+  row.insertBefore(input, bodyEl);
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+
+  const finish = (save) => {
+    if (save) {
+      const newText = input.value.trim();
+      if (newText && newText !== currentText) {
+        socket.emit('edit-chat-message', { message_id: messageId, text: newText });
+      }
+    }
+    input.remove();
+    bodyEl.style.display = '';
+  };
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
+function applyEditedMessage(messageId, newText) {
+  const row = document.getElementById(`chat-msg-${messageId}`);
+  if (!row) return;
+  const bodyEl = row.querySelector('.chat-msg-text');
+  if (!bodyEl) return;
+  const editedTag = bodyEl.querySelector('.chat-edited-tag');
+  bodyEl.textContent = newText;
+  if (editedTag) { bodyEl.appendChild(editedTag); editedTag.style.display = 'inline'; }
 }
 
 function escapeHtml(s) {
@@ -781,6 +856,7 @@ function initSocket() {
   socket.on('force-unmute', ({ user_id }) => { if (user_id === CC_USER_ID) applyForcedMute(false); });
 
   socket.on('chat-message', renderChatMessage);
+  socket.on('chat-message-edited', ({ id, text }) => applyEditedMessage(id, text));
 
   socket.on('screen-share-requested', ({ user_id, user_name }) => {
     if (CC_USER_ROLE === 'lecturer') addScreenShareRequestEntry(user_id, user_name);
@@ -864,5 +940,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // block basic page interactivity like the Camera button.
   initSocket();
   wireButtons();
+  loadChatHistory();
   loadIceServers(); // fires in the background, has its own 6s timeout
 });

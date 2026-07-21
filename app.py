@@ -109,6 +109,45 @@ login_manager.login_message_category = 'info'
 
 # ── Models ────────────────────────────────────────────────────────────────────
 
+class Organization(db.Model):
+    """The top-level tenant. Every user belongs to exactly one. Started as
+    university-only; this generalizes it to any organization (company,
+    NGO, training provider, community group, etc.) while keeping the
+    underlying role/course/session model identical — only the vocabulary
+    shown to users changes based on org_type. See ORG_LABELS below."""
+    __tablename__ = 'organizations'
+    id          = db.Column(db.Integer, primary_key=True)
+    name        = db.Column(db.String(150), nullable=False)
+    org_type    = db.Column(db.String(20), nullable=False, default='university')  # 'university' | 'organization'
+    join_code   = db.Column(db.String(10), unique=True, nullable=False)
+    created_at  = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    members     = db.relationship('User', backref='organization', lazy=True)
+
+
+# Vocabulary shown to users, based on their organization's type. The
+# underlying role values in the database ('lecturer', 'student', 'admin')
+# never change — only these display labels do — so none of the existing
+# permission logic (role_required, is_course_lecturer, etc.) needed to
+# change to support organizations.
+ORG_LABELS = {
+    'university': {
+        'org_word': 'University', 'admin_role': 'Lecturer', 'admin_role_plural': 'Lecturers',
+        'member_role': 'Student', 'member_role_plural': 'Students',
+        'unit': 'Course', 'unit_plural': 'Courses', 'id_field': 'Matric Number',
+    },
+    'organization': {
+        'org_word': 'Organization', 'admin_role': 'Facilitator', 'admin_role_plural': 'Facilitators',
+        'member_role': 'Member', 'member_role_plural': 'Members',
+        'unit': 'Program', 'unit_plural': 'Programs', 'id_field': 'Member ID',
+    },
+}
+
+
+def get_org_labels(organization):
+    org_type = organization.org_type if organization else 'university'
+    return ORG_LABELS.get(org_type, ORG_LABELS['university'])
+
+
 class User(UserMixin, db.Model):
     __tablename__ = 'users'
     id              = db.Column(db.Integer, primary_key=True)
@@ -118,6 +157,7 @@ class User(UserMixin, db.Model):
     role            = db.Column(db.String(20), nullable=False)   # lecturer | student | admin
     id_number       = db.Column(db.String(30), unique=True, nullable=True)
     # Unique identity number: Matric Number for students, Staff/Lecturer ID for lecturers.
+    organization_id = db.Column(db.Integer, db.ForeignKey('organizations.id'), nullable=True)
     email_verified  = db.Column(db.Boolean, default=False)
     otp             = db.Column(db.String(6))
     otp_expires     = db.Column(db.DateTime)
@@ -127,6 +167,10 @@ class User(UserMixin, db.Model):
 
     courses_taught = db.relationship('Course', backref='lecturer', lazy=True,
                                      foreign_keys='Course.lecturer_id')
+
+    @property
+    def labels(self):
+        return get_org_labels(self.organization)
 
     def set_password(self, pw):
         self.password_hash = generate_password_hash(pw)
@@ -246,6 +290,22 @@ class ClassSession(db.Model):
 
     participants       = db.relationship('SessionParticipant', backref='session', lazy=True, cascade='all, delete-orphan')
     attendance_records = db.relationship('AttendanceRecord',   backref='session', lazy=True, cascade='all, delete-orphan')
+    chat_messages       = db.relationship('SessionChatMessage', backref='session', lazy=True, cascade='all, delete-orphan')
+
+
+class SessionChatMessage(db.Model):
+    """Persisted live-session chat. Previously this was broadcast-only and
+    vanished on refresh — now it's stored so re-entering an active session
+    (or just reloading the page) shows the full history, and a message's
+    author can edit it afterward if they made a typo."""
+    __tablename__ = 'session_chat_messages'
+    id          = db.Column(db.Integer, primary_key=True)
+    session_id  = db.Column(db.Integer, db.ForeignKey('class_sessions.id'), nullable=False)
+    user_id     = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    text        = db.Column(db.Text, nullable=False)
+    created_at  = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    edited_at   = db.Column(db.DateTime)
+    user        = db.relationship('User', foreign_keys=[user_id])
 
 
 class SessionParticipant(db.Model):
@@ -311,6 +371,7 @@ def ensure_schema_upgrades():
         'users': {
             'reset_token': 'VARCHAR(64)',
             'reset_token_expires': 'TIMESTAMP' if is_postgres else 'DATETIME',
+            'organization_id': 'INTEGER',
         },
         'courses': {
             'lecturer_invite_code': 'VARCHAR(10)',
@@ -366,6 +427,14 @@ def generate_lecturer_invite_code(length=8):
     while True:
         code = ''.join(secrets.choice(chars) for _ in range(length))
         if not Course.query.filter_by(lecturer_invite_code=code).first():
+            return code
+
+
+def generate_org_join_code(length=7):
+    chars = string.ascii_uppercase + string.digits
+    while True:
+        code = ''.join(secrets.choice(chars) for _ in range(length))
+        if not Organization.query.filter_by(join_code=code).first():
             return code
 
 
@@ -540,6 +609,18 @@ def role_required(*roles):
     return decorator
 
 
+@app.context_processor
+def inject_org_labels():
+    """Makes `labels` (and the raw org_type) available in every template
+    automatically — e.g. {{ labels.admin_role }} renders 'Lecturer' for a
+    university or 'Facilitator' for a general organization, without every
+    single route needing to pass it explicitly."""
+    if current_user.is_authenticated and current_user.organization:
+        return {'labels': get_org_labels(current_user.organization),
+                'current_org': current_user.organization}
+    return {'labels': ORG_LABELS['university'], 'current_org': None}
+
+
 # ── Auth routes ───────────────────────────────────────────────────────────────
 
 @app.route('/')
@@ -559,11 +640,35 @@ def register():
         password  = request.form.get('password', '')
         role      = request.form.get('role', 'student')
         id_number = request.form.get('id_number', '').strip().upper()
+        org_mode  = request.form.get('org_mode', 'create')
 
         if role not in ('student', 'lecturer'):
             role = 'student'
 
-        id_label = 'Matric Number' if role == 'student' else 'Staff/Lecturer ID'
+        # Resolve which organization this account belongs to — either
+        # joining an existing one via its code, or standing up a brand
+        # new one (this person becomes its first member).
+        organization = None
+        if org_mode == 'join':
+            org_code = request.form.get('org_join_code', '').strip().upper()
+            organization = Organization.query.filter_by(join_code=org_code).first()
+            if not organization:
+                flash('That organization join code was not found. Check it and try again.', 'danger')
+                return redirect(url_for('register'))
+        else:
+            org_name = request.form.get('org_name', '').strip()
+            org_type = request.form.get('org_type', 'university')
+            if org_type not in ('university', 'organization'):
+                org_type = 'university'
+            if not org_name:
+                flash('Enter a name for your university or organization.', 'danger')
+                return redirect(url_for('register'))
+            organization = Organization(name=org_name, org_type=org_type,
+                                        join_code=generate_org_join_code())
+            db.session.add(organization)
+            db.session.flush()   # get organization.id before we reference it below
+
+        id_label = get_org_labels(organization)['id_field']
 
         if not full_name or not email or not password or not id_number:
             flash(f'All fields are required, including your {id_label}.', 'danger')
@@ -575,7 +680,8 @@ def register():
             flash(f'That {id_label} is already registered to another account.', 'danger')
             return redirect(url_for('register'))
 
-        user = User(full_name=full_name, email=email, role=role, id_number=id_number)
+        user = User(full_name=full_name, email=email, role=role, id_number=id_number,
+                    organization_id=organization.id)
         user.set_password(password)
         db.session.add(user)
         db.session.flush()   # get user.id before commit
@@ -950,9 +1056,16 @@ def session_room(session_id):
     participants  = SessionParticipant.query.filter_by(session_id=session_obj.id).all()
     attendance    = AttendanceRecord.query.filter_by(session_id=session_obj.id).all()
     attendance_ids = {a.student_id for a in attendance}
+    chat_history = (SessionChatMessage.query.filter_by(session_id=session_obj.id)
+                    .order_by(SessionChatMessage.created_at).all())
+    chat_history_json = [{
+        'id': m.id, 'user_id': m.user_id, 'user_name': m.user.full_name, 'role': m.user.role,
+        'text': m.text, 'ts': m.created_at.strftime('%H:%M'), 'edited': m.edited_at is not None,
+    } for m in chat_history]
 
     return render_template('session_room.html', session=session_obj, course=course,
-                           participants=participants, attendance_ids=attendance_ids)
+                           participants=participants, attendance_ids=attendance_ids,
+                           chat_history_json=chat_history_json)
 
 
 @app.route('/api/turn-credentials')
@@ -1584,22 +1697,53 @@ def on_force_unmute(data):
 
 @socketio.on('chat-message')
 def on_chat_message(data):
-    """Real-time chat for the session — not persisted to the database, this
-    is a live discussion channel only (messages don't survive a page
-    reload). Broadcast to everyone in the room, including the sender, so
-    every client renders from a single authoritative source."""
+    """Live-session chat — now persisted to the database (see
+    SessionChatMessage), so re-entering an active session or just
+    refreshing shows the full history instead of losing it. Broadcast to
+    everyone in the room, including the sender, so every client renders
+    from a single authoritative source."""
     if not current_user.is_authenticated:
         return
-    room = f"session_{data['session_id']}"
+    session_id = data['session_id']
+    room = f"session_{session_id}"
     text = (data.get('text') or '').strip()[:1000]  # hard cap, avoid abuse
     if not text:
         return
+
+    msg = SessionChatMessage(session_id=session_id, user_id=current_user.id, text=text)
+    db.session.add(msg)
+    db.session.commit()
+
     emit('chat-message', {
+        'id': msg.id,
         'user_id': current_user.id,
         'user_name': current_user.full_name,
         'role': current_user.role,
         'text': text,
-        'ts': datetime.now(timezone.utc).strftime('%H:%M'),
+        'ts': msg.created_at.strftime('%H:%M'),
+    }, to=room)
+
+
+@socketio.on('edit-chat-message')
+def on_edit_chat_message(data):
+    """Lets someone fix a typo in a message they sent earlier in the same
+    live session. Only the original author can edit their own message —
+    enforced here server-side, not just hidden in the UI."""
+    if not current_user.is_authenticated:
+        return
+    msg = db.session.get(SessionChatMessage, data.get('message_id'))
+    if not msg or msg.user_id != current_user.id:
+        return   # not their message — silently ignore, no info leak either way
+    new_text = (data.get('text') or '').strip()[:1000]
+    if not new_text:
+        return
+    msg.text = new_text
+    msg.edited_at = datetime.now(timezone.utc)
+    db.session.commit()
+
+    room = f"session_{msg.session_id}"
+    emit('chat-message-edited', {
+        'id': msg.id, 'text': msg.text, 'edited': True
     }, to=room)
 
 
@@ -1694,6 +1838,26 @@ def bootstrap_db():
         os.makedirs(os.path.join(basedir, 'instance'), exist_ok=True)
         db.create_all()
         ensure_schema_upgrades()
+
+        # This deployment predates the multi-organization model — every
+        # existing user needs to belong to SOME organization so their
+        # courses/enrolments/sessions keep working coherently instead of
+        # looking orphaned. Create one default university organization and
+        # attach any user who doesn't already have one.
+        orphaned = User.query.filter_by(organization_id=None).all()
+        if orphaned:
+            default_org = Organization.query.filter_by(name='Federal University Otuoke').first()
+            if not default_org:
+                default_org = Organization(name='Federal University Otuoke', org_type='university',
+                                           join_code=generate_org_join_code())
+                db.session.add(default_org)
+                db.session.flush()
+            for u in orphaned:
+                u.organization_id = default_org.id
+            db.session.commit()
+            print(f'[MIGRATION] Assigned {len(orphaned)} pre-existing user(s) to default organization '
+                  f'"{default_org.name}" (join code: {default_org.join_code})')
+
         if not User.query.filter_by(role='admin').first():
             admin = User(full_name='System Administrator', email='admin@fuo.edu.ng',
                          role='admin', email_verified=True)

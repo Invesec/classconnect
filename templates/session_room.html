@@ -8,6 +8,7 @@ const CC_USER_ID    = {{ current_user.id }};
 const CC_USER_NAME  = {{ current_user.full_name | tojson }};
 const CC_USER_ROLE  = {{ current_user.role | tojson }};
 const CC_COURSE_ID  = {{ course.id }};
+const CC_CHAT_HISTORY = {{ chat_history_json | tojson }};
 </script>
 
 <div class="session-header animate-fade">

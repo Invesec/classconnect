@@ -103,6 +103,7 @@ body.no-scroll { overflow: hidden; }
 .role-lecturer { background: rgba(59,130,246,.25); color: #93c5fd; }
 .role-student  { background: rgba(34,197,94,.2);  color: #86efac; }
 .role-admin    { background: rgba(245,158,11,.2);  color: #fcd34d; }
+.user-org { font-size: .72rem; color: var(--slate-400); margin-top: .25rem; }
 
 .sidebar-nav { padding: .75rem 0; flex: 1; }
 .nav-item {
@@ -570,8 +571,15 @@ tr:hover td { background: var(--slate-50); }
   padding: .5rem .7rem; max-width: 85%; align-self: flex-start;
 }
 .chat-msg-own { align-self: flex-end; background: var(--blue-50); border-color: var(--blue-200, #bfdbfe); }
-.chat-msg-meta { font-size: .7rem; color: var(--slate-500); margin-bottom: .15rem; font-weight: 600; }
+.chat-msg-meta { font-size: .7rem; color: var(--slate-500); margin-bottom: .15rem; font-weight: 600; display: flex; align-items: center; gap: .4rem; }
 .chat-msg-text { font-size: .875rem; color: var(--slate-800); white-space: pre-wrap; word-break: break-word; }
+.chat-edit-btn {
+  background: none; border: none; cursor: pointer; font-size: .68rem;
+  color: var(--blue-600); font-weight: 600; padding: 0; opacity: 0; transition: opacity .15s;
+}
+.chat-msg-own:hover .chat-edit-btn { opacity: 1; }
+.chat-edited-tag { color: var(--slate-400); font-size: .72rem; font-style: italic; }
+.chat-edit-input { font-size: .875rem; padding: .4rem .6rem; }
 .chat-emoji-row { display: flex; gap: .35rem; margin-bottom: .5rem; }
 .emoji-quick-btn {
   background: white; border: 1px solid var(--slate-200); border-radius: 8px;

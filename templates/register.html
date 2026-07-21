@@ -2,29 +2,66 @@
 {% block title %}Register – ClassConnect{% endblock %}
 {% block content %}
 <div class="auth-wrap">
-  <div class="auth-card animate-up" style="max-width:500px;">
+  <div class="auth-card animate-up" style="max-width:540px;">
     <div class="auth-logo">
       <div class="auth-logo-icon">🎓</div>
       <div class="auth-title">Create your account</div>
-      <div class="auth-sub">Join ClassConnect at Federal University Otuoke</div>
+      <div class="auth-sub">For universities, companies, and any organization running classes or training</div>
     </div>
 
     <form method="POST" id="reg-form">
+      <!-- Organization step -->
       <div class="form-group">
-        <label class="form-label">I am a</label>
+        <label class="form-label">Your Organization</label>
+        <div class="tabs" style="margin-bottom:1rem;">
+          <button type="button" class="tab-btn active" id="tab-create" onclick="setOrgMode('create')">Set up a new one</button>
+          <button type="button" class="tab-btn" id="tab-join" onclick="setOrgMode('join')">Join an existing one</button>
+        </div>
+        <input type="hidden" name="org_mode" id="org_mode" value="create">
+
+        <div id="org-create-panel">
+          <div class="form-row">
+            <div class="form-group" style="flex:2;">
+              <label class="form-label">Organization Name</label>
+              <input type="text" name="org_name" id="org_name" class="form-input"
+                     placeholder="e.g. Federal University Otuoke, or Acme Ltd">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Type</label>
+              <select name="org_type" id="org_type" class="form-select" onchange="updateWording()">
+                <option value="university">University / School</option>
+                <option value="organization">Company / Organization</option>
+              </select>
+            </div>
+          </div>
+          <p class="form-hint">You'll get a join code afterward to invite others into it.</p>
+        </div>
+
+        <div id="org-join-panel" class="hidden">
+          <div class="form-group">
+            <label class="form-label">Organization Join Code</label>
+            <input type="text" name="org_join_code" id="org_join_code" class="form-input"
+                   placeholder="e.g. AB12CD3" style="text-transform:uppercase;letter-spacing:.1rem;">
+          </div>
+          <p class="form-hint">Get this from your organization's admin.</p>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" id="role-question">I am a</label>
         <div class="role-selector">
           <label class="role-option">
-            <input type="radio" name="role" value="student" checked onchange="updateIdLabel()">
+            <input type="radio" name="role" value="student" checked onchange="updateWording()">
             <div class="role-label">
-              <span class="role-emoji">👨‍🎓</span>
-              <span class="role-text">Student</span>
+              <span class="role-emoji" id="member-emoji">👨‍🎓</span>
+              <span class="role-text" id="member-role-text">Student</span>
             </div>
           </label>
           <label class="role-option">
-            <input type="radio" name="role" value="lecturer" onchange="updateIdLabel()">
+            <input type="radio" name="role" value="lecturer" onchange="updateWording()">
             <div class="role-label">
-              <span class="role-emoji">👨‍🏫</span>
-              <span class="role-text">Lecturer</span>
+              <span class="role-emoji" id="admin-emoji">👨‍🏫</span>
+              <span class="role-text" id="admin-role-text">Lecturer</span>
             </div>
           </label>
         </div>
@@ -75,11 +112,44 @@
   </div>
 </div>
 <script>
-function updateIdLabel() {
-  const isLecturer = document.querySelector('input[name="role"]:checked').value === 'lecturer';
-  document.getElementById('id-label').textContent = isLecturer ? 'Staff/Lecturer ID' : 'Matric Number';
-  document.getElementById('id-field').placeholder = isLecturer ? 'e.g. FUO/STAFF/001' : 'e.g. FUO/21/CSI/123';
+const WORDING = {
+  university:   { admin: 'Lecturer', adminEmoji: '👨‍🏫', member: 'Student', memberEmoji: '👨‍🎓',
+                  idLabelLecturer: 'Staff/Lecturer ID', idLabelStudent: 'Matric Number',
+                  idPlaceholderLecturer: 'e.g. FUO/STAFF/001', idPlaceholderStudent: 'e.g. FUO/21/CSI/123' },
+  organization: { admin: 'Facilitator', adminEmoji: '🧑‍💼', member: 'Member', memberEmoji: '🙋',
+                  idLabelLecturer: 'Staff ID', idLabelStudent: 'Member ID',
+                  idPlaceholderLecturer: 'e.g. STAFF-014', idPlaceholderStudent: 'e.g. MEM-014' },
+};
+
+function setOrgMode(mode) {
+  document.getElementById('org_mode').value = mode;
+  document.getElementById('tab-create').classList.toggle('active', mode === 'create');
+  document.getElementById('tab-join').classList.toggle('active', mode === 'join');
+  document.getElementById('org-create-panel').classList.toggle('hidden', mode !== 'create');
+  document.getElementById('org-join-panel').classList.toggle('hidden', mode !== 'join');
+  document.getElementById('org_name').required = (mode === 'create');
+  document.getElementById('org_join_code').required = (mode === 'join');
 }
+
+function updateWording() {
+  // When joining an existing org we don't know its type client-side, so
+  // keep neutral defaults there — the server uses the ORG's actual type
+  // for validation messages regardless of what's shown here.
+  const orgType = document.getElementById('org_mode').value === 'join'
+    ? 'university' : document.getElementById('org_type').value;
+  const w = WORDING[orgType];
+  const isLecturer = document.querySelector('input[name="role"]:checked').value === 'lecturer';
+
+  document.getElementById('admin-role-text').textContent = w.admin;
+  document.getElementById('admin-emoji').textContent = w.adminEmoji;
+  document.getElementById('member-role-text').textContent = w.member;
+  document.getElementById('member-emoji').textContent = w.memberEmoji;
+  document.getElementById('role-question').textContent = `I am a ${w.member.toLowerCase()} or ${w.admin.toLowerCase()}`;
+
+  document.getElementById('id-label').textContent = isLecturer ? w.idLabelLecturer : w.idLabelStudent;
+  document.getElementById('id-field').placeholder = isLecturer ? w.idPlaceholderLecturer : w.idPlaceholderStudent;
+}
+
 function togglePw() {
   const f = document.getElementById('pw-field');
   const b = document.getElementById('pw-toggle');
@@ -107,5 +177,8 @@ document.getElementById('reg-form').addEventListener('submit', () => {
   document.getElementById('reg-spinner').style.display = 'inline';
   document.getElementById('reg-btn').disabled = true;
 });
+
+setOrgMode('create');
+updateWording();
 </script>
 {% endblock %}
